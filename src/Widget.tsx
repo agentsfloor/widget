@@ -547,6 +547,7 @@ export function Widget({ config }: { config: WidgetConfig }) {
           intentKey: 'chat',
           query: text,
           customParams: {},
+          deployment_type: 'chat_widget_agui',
         }),
       })
 
