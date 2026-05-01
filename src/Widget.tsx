@@ -510,7 +510,7 @@ export function Widget({ config }: { config: WidgetConfig }) {
     const openTimer = window.setTimeout(() => {
       openReject(new Error('SSE connection timed out'))
       finish()
-    }, 8000)
+    }, 30000)
 
     es.addEventListener('open', () => {
       clearTimeout(openTimer)
