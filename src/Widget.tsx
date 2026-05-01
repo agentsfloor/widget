@@ -19,6 +19,8 @@ export interface WidgetConfig {
   title: string
   theme: 'light' | 'dark'
   runtimeUrl: string
+  /** Optional JWT signed with widget_auth_jwt_secret. Sent as Authorization: Bearer {token}. */
+  authToken?: string
 }
 
 interface Msg {
@@ -412,13 +414,18 @@ export function Widget({ config }: { config: WidgetConfig }) {
     try {
       await openP
 
+      const postHeaders: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'X-Session-ID': sid.current,
+        'X-Trace-Session': traceId,
+      }
+      if (config.authToken) {
+        postHeaders['Authorization'] = `Bearer ${config.authToken}`
+      }
+
       const res = await fetch(postUrl, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Session-ID': sid.current,
-          'X-Trace-Session': traceId,
-        },
+        headers: postHeaders,
         body: JSON.stringify({
           projectId: config.org,
           intentKey: 'chat',

@@ -42,6 +42,7 @@ const config: WidgetConfig = isDev
       title:      import.meta.env.VITE_DEV_TITLE       ?? 'AI Assistant',
       theme:      (import.meta.env.VITE_DEV_THEME      ?? 'light') as 'light' | 'dark',
       runtimeUrl: (import.meta.env.VITE_DEV_RUNTIME_URL ?? 'http://localhost:8000').replace(/\/$/, ''),
+      authToken:  import.meta.env.VITE_DEV_AUTH_TOKEN  || undefined,
     }
   : {
       org:        attr('org'),
@@ -50,6 +51,8 @@ const config: WidgetConfig = isDev
       title:      attr('title', 'AI Assistant'),
       theme:      attr('theme', 'light') as 'light' | 'dark',
       runtimeUrl: attr('runtime-url').replace(/\/$/, ''),
+      // data-auth-token is optional — omit attribute entirely for unauthenticated workflows
+      authToken:  attr('auth-token') || undefined,
     }
 
 if (!config.org || !config.workflow || !config.runtimeUrl) {
