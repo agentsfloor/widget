@@ -9,6 +9,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { A2UIRenderer, type A2UIPayload } from './A2UIRenderer'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -29,6 +30,8 @@ interface Msg {
   content: string
   streaming: boolean
   error: boolean
+  /** A2UI component blocks rendered below text content. Appended by A2UIContent SSE events. */
+  a2uiBlocks?: A2UIPayload[]
 }
 
 // ── Session ID ────────────────────────────────────────────────────────────────
@@ -268,6 +271,82 @@ const WIDGET_CSS = `
 }
 .agf-send:hover:not(:disabled) { background: #4f46e5; }
 .agf-send:disabled { opacity: 0.38; cursor: not-allowed; }
+
+/* ── A2UI component styles ──────────────────────────────────────────────── */
+.agf-a2ui { max-width: 100%; margin-top: 6px; font-size: 12px; }
+.agf-a2ui-title {
+  font-size: 11px; font-weight: 700; padding: 0 0 4px;
+  color: #6366f1; letter-spacing: 0.01em;
+}
+/* card */
+.agf-card {
+  background: #f9f9fb; border: 1px solid rgba(0,0,0,0.08);
+  border-radius: 10px; padding: 10px 12px;
+}
+.agf-panel.dark .agf-card { background: #1c1c20; border-color: rgba(255,255,255,0.08); }
+.agf-card-field {
+  display: flex; gap: 8px; padding: 3px 0;
+  border-bottom: 1px solid rgba(0,0,0,0.05);
+}
+.agf-card-field:last-child { border-bottom: none; }
+.agf-panel.dark .agf-card-field { border-color: rgba(255,255,255,0.05); }
+.agf-card-label { color: #71717a; min-width: 80px; font-size: 11px; font-weight: 600; flex-shrink: 0; }
+.agf-card-value { color: inherit; font-size: 12px; word-break: break-word; }
+/* table */
+.agf-table-wrap {
+  overflow-x: auto; border-radius: 10px;
+  border: 1px solid rgba(0,0,0,0.08);
+}
+.agf-panel.dark .agf-table-wrap { border-color: rgba(255,255,255,0.08); }
+.agf-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.agf-table th {
+  background: #f4f4f5; padding: 6px 10px; text-align: left;
+  font-weight: 700; color: #52525b;
+  border-bottom: 1px solid rgba(0,0,0,0.08);
+}
+.agf-panel.dark .agf-table th {
+  background: #27272a; color: #a1a1aa; border-color: rgba(255,255,255,0.08);
+}
+.agf-table td { padding: 5px 10px; border-bottom: 1px solid rgba(0,0,0,0.05); color: inherit; }
+.agf-panel.dark .agf-table td { border-color: rgba(255,255,255,0.05); }
+.agf-table tr:last-child td { border-bottom: none; }
+/* list */
+.agf-list {
+  background: #f9f9fb; border: 1px solid rgba(0,0,0,0.08);
+  border-radius: 10px; padding: 10px 12px;
+}
+.agf-panel.dark .agf-list { background: #1c1c20; border-color: rgba(255,255,255,0.08); }
+.agf-list-item { display: flex; gap: 8px; align-items: flex-start; padding: 3px 0; font-size: 12px; }
+.agf-list-bullet { color: #6366f1; flex-shrink: 0; font-size: 11px; padding-top: 1px; min-width: 14px; }
+/* timeline */
+.agf-timeline {
+  background: #f9f9fb; border: 1px solid rgba(0,0,0,0.08);
+  border-radius: 10px; padding: 10px 12px;
+}
+.agf-panel.dark .agf-timeline { background: #1c1c20; border-color: rgba(255,255,255,0.08); }
+.agf-tl-item { display: flex; gap: 10px; padding: 4px 0; }
+.agf-tl-item:not(:last-child) { border-bottom: 1px solid rgba(0,0,0,0.05); }
+.agf-panel.dark .agf-tl-item:not(:last-child) { border-color: rgba(255,255,255,0.05); }
+.agf-tl-date { min-width: 68px; font-size: 10px; font-weight: 700; color: #6366f1; padding-top: 1px; flex-shrink: 0; }
+.agf-tl-event { font-size: 12px; font-weight: 600; }
+.agf-tl-desc { font-size: 11px; color: #71717a; margin-top: 1px; }
+/* map */
+.agf-map {
+  background: #f9f9fb; border: 1px solid rgba(0,0,0,0.08);
+  border-radius: 10px; padding: 10px 12px;
+}
+.agf-panel.dark .agf-map { background: #1c1c20; border-color: rgba(255,255,255,0.08); }
+.agf-map-pin { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 11px; }
+/* chart */
+.agf-chart {
+  background: #f9f9fb; border: 1px solid rgba(0,0,0,0.08);
+  border-radius: 10px; padding: 10px 12px; overflow: hidden;
+}
+.agf-panel.dark .agf-chart { background: #1c1c20; border-color: rgba(255,255,255,0.08); }
+.agf-chart-legend { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.agf-chart-legend-item { display: flex; align-items: center; gap: 4px; font-size: 10px; color: #71717a; }
+.agf-panel.dark .agf-chart-legend-item { color: #a1a1aa; }
+.agf-chart-legend-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 `
 
 // ── Inline SVG icons (zero external deps) ────────────────────────────────────
@@ -298,6 +377,26 @@ function IconSend() {
   )
 }
 
+// ── A2UI type detection ───────────────────────────────────────────────────────
+// Mirrors Python _A2UI_COMPONENT_TYPES in agent-runtime/core/workflow.py.
+// Add new component types here and in the Python constant — nowhere else.
+
+const A2UI_TYPES = new Set(['card', 'table', 'list', 'timeline', 'map', 'chart'])
+
+function isA2UIJson(content: string): boolean {
+  if (!content) return false
+  try {
+    const parsed: unknown = JSON.parse(content)
+    return (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      A2UI_TYPES.has((parsed as Record<string, unknown>).type as string)
+    )
+  } catch {
+    return false
+  }
+}
+
 // ── Widget ────────────────────────────────────────────────────────────────────
 
 export function Widget({ config }: { config: WidgetConfig }) {
@@ -325,6 +424,13 @@ export function Widget({ config }: { config: WidgetConfig }) {
 
   function patchMsg(id: string, patch: Partial<Omit<Msg, 'id' | 'role'>>) {
     setMsgs(prev => prev.map(m => m.id === id ? { ...m, ...patch } : m))
+  }
+
+  // Appends a single A2UI block to a message — called per A2UIContent SSE event.
+  function appendA2UIBlock(id: string, block: A2UIPayload) {
+    setMsgs(prev => prev.map(m =>
+      m.id === id ? { ...m, a2uiBlocks: [...(m.a2uiBlocks ?? []), block] } : m
+    ))
   }
 
   const send = useCallback(async () => {
@@ -382,6 +488,16 @@ export function Widget({ config }: { config: WidgetConfig }) {
       try { msg = (JSON.parse(e.data).message as string | undefined) ?? msg } catch { /* */ }
       patchMsg(asgId, { content: msg, streaming: false, error: true })
       finish()
+    })
+
+    // A2UIContent — agent emitted a structured UI component (card/table/list/timeline/map/chart).
+    // Parsed and appended to this message's a2uiBlocks; rendered below text by A2UIRenderer.
+    // Multiple A2UIContent events in one response → multiple blocks rendered in sequence.
+    es.addEventListener('A2UIContent', (e: MessageEvent) => {
+      try {
+        const block = JSON.parse(e.data) as A2UIPayload
+        appendA2UIBlock(asgId, block)
+      } catch { /* skip malformed A2UI payloads */ }
     })
 
     // ── Wait for SSE connection before POSTing ─────────────────────────────
@@ -504,12 +620,19 @@ export function Widget({ config }: { config: WidgetConfig }) {
 
             {msgs.map(m => (
               <div key={m.id} className={`agf-msg ${m.role}${m.error ? ' error' : ''}`}>
-                <div className="agf-bubble">
-                  {m.content}
-                  {m.streaming && m.role === 'assistant' && (
-                    <span className="agf-cursor" aria-hidden="true" />
-                  )}
-                </div>
+                {/* Text bubble — shown when streaming, or when content exists and is not pure A2UI JSON */}
+                {(m.streaming || (m.content && !isA2UIJson(m.content))) && (
+                  <div className="agf-bubble">
+                    {m.content}
+                    {m.streaming && m.role === 'assistant' && (
+                      <span className="agf-cursor" aria-hidden="true" />
+                    )}
+                  </div>
+                )}
+                {/* A2UI structured components — rendered in sequence below text */}
+                {m.a2uiBlocks?.map((block, i) => (
+                  <A2UIRenderer key={i} payload={block} isDark={isDark} />
+                ))}
               </div>
             ))}
             <div ref={bottomRef} />
