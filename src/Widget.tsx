@@ -1,0 +1,537 @@
+/**
+ * AgentsFloor Embeddable Chat Widget
+ *
+ * AG-UI SSE protocol:
+ *   1. Open EventSource GET /v1/{org}/{workflow}/trace?session_id={traceId}
+ *   2. POST /v1/{org}/{workflow}/{version} with X-Session-ID + X-Trace-Session headers
+ *   3. Consume AG-UI events (those with SSE `event:` line): TextMessageContent, RunFinished, RunError
+ *   4. Canvas trace events (no `event:` line) are silently ignored by EventSource named listeners
+ */
+
+import { useState, useEffect, useRef, useCallback } from 'react'
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+export interface WidgetConfig {
+  org: string
+  workflow: string
+  version: string
+  title: string
+  theme: 'light' | 'dark'
+  runtimeUrl: string
+}
+
+interface Msg {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  streaming: boolean
+  error: boolean
+}
+
+// ── Session ID ────────────────────────────────────────────────────────────────
+// Persists per browser tab — drives LangGraph thread continuity (X-Session-ID)
+
+function getSessionId(): string {
+  const KEY = '__agf_sid'
+  try {
+    let id = sessionStorage.getItem(KEY)
+    if (!id) {
+      id = crypto.randomUUID()
+      sessionStorage.setItem(KEY, id)
+    }
+    return id
+  } catch {
+    return crypto.randomUUID()
+  }
+}
+
+// ── Styles ────────────────────────────────────────────────────────────────────
+// Injected as a <style> tag so the widget is self-contained regardless of host CSS
+
+const WIDGET_CSS = `
+#agf-root * { box-sizing: border-box; margin: 0; padding: 0; }
+#agf-root { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+
+.agf-btn {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 99999;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: #6366f1;
+  color: #ffffff;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 24px rgba(99,102,241,0.45);
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+.agf-btn:hover {
+  transform: scale(1.08);
+  box-shadow: 0 6px 28px rgba(99,102,241,0.55);
+}
+.agf-btn:active { transform: scale(0.97); }
+
+.agf-panel {
+  position: fixed;
+  bottom: 92px;
+  right: 24px;
+  z-index: 99998;
+  width: 380px;
+  height: 540px;
+  border-radius: 16px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+  color: #18181b;
+  box-shadow: 0 8px 48px rgba(0,0,0,0.16), 0 0 0 1px rgba(0,0,0,0.06);
+  animation: agf-slide 0.2s ease;
+}
+.agf-panel.dark {
+  background: #18181b;
+  color: #f4f4f5;
+  box-shadow: 0 8px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.06);
+}
+@keyframes agf-slide {
+  from { opacity: 0; transform: translateY(10px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.agf-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  background: #6366f1;
+  color: #ffffff;
+  flex-shrink: 0;
+}
+.agf-header-title {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.agf-header-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: rgba(255,255,255,0.75);
+  padding: 4px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  transition: color 0.15s;
+  line-height: 1;
+}
+.agf-header-close:hover { color: #ffffff; }
+
+.agf-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0,0,0,0.12) transparent;
+}
+.agf-panel.dark .agf-messages {
+  scrollbar-color: rgba(255,255,255,0.12) transparent;
+}
+
+.agf-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.agf-empty-text {
+  font-size: 12px;
+  color: #a1a1aa;
+  text-align: center;
+  line-height: 1.6;
+}
+
+.agf-msg {
+  display: flex;
+  flex-direction: column;
+  max-width: 82%;
+}
+.agf-msg.user { align-self: flex-end; align-items: flex-end; }
+.agf-msg.assistant { align-self: flex-start; align-items: flex-start; }
+
+.agf-bubble {
+  padding: 9px 13px;
+  border-radius: 16px;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.agf-msg.user .agf-bubble {
+  background: #6366f1;
+  color: #ffffff;
+  border-bottom-right-radius: 4px;
+}
+.agf-msg.assistant .agf-bubble {
+  background: #f4f4f5;
+  color: #18181b;
+  border-bottom-left-radius: 4px;
+}
+.agf-panel.dark .agf-msg.assistant .agf-bubble {
+  background: #27272a;
+  color: #f4f4f5;
+}
+.agf-msg.assistant.error .agf-bubble {
+  background: #fef2f2;
+  color: #dc2626;
+  border-bottom-left-radius: 4px;
+}
+.agf-panel.dark .agf-msg.assistant.error .agf-bubble {
+  background: #450a0a;
+  color: #fca5a5;
+}
+
+.agf-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 13px;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: currentColor;
+  border-radius: 1px;
+  opacity: 0.65;
+  animation: agf-blink 0.85s ease-in-out infinite;
+}
+@keyframes agf-blink {
+  0%, 100% { opacity: 0.65; }
+  50%       { opacity: 0; }
+}
+
+.agf-footer {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  padding: 10px 14px 14px;
+  border-top: 1px solid rgba(0,0,0,0.07);
+  background: inherit;
+  flex-shrink: 0;
+}
+.agf-panel.dark .agf-footer { border-color: rgba(255,255,255,0.07); }
+
+.agf-input {
+  flex: 1;
+  resize: none;
+  border-radius: 12px;
+  font-size: 13px;
+  padding: 9px 13px;
+  line-height: 1.45;
+  max-height: 120px;
+  outline: none;
+  border: 1.5px solid rgba(0,0,0,0.12);
+  background: #fafafa;
+  color: #18181b;
+  font-family: inherit;
+  transition: border-color 0.15s;
+  overflow-y: auto;
+}
+.agf-input:focus { border-color: #6366f1; }
+.agf-input:disabled { opacity: 0.5; cursor: not-allowed; }
+.agf-panel.dark .agf-input {
+  background: #27272a;
+  color: #f4f4f5;
+  border-color: rgba(255,255,255,0.12);
+}
+.agf-panel.dark .agf-input:focus { border-color: #818cf8; }
+
+.agf-send {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  border: none;
+  cursor: pointer;
+  background: #6366f1;
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.15s, opacity 0.15s;
+}
+.agf-send:hover:not(:disabled) { background: #4f46e5; }
+.agf-send:disabled { opacity: 0.38; cursor: not-allowed; }
+`
+
+// ── Inline SVG icons (zero external deps) ────────────────────────────────────
+
+function IconMsg() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    </svg>
+  )
+}
+
+function IconX() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+  )
+}
+
+function IconSend() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="22" y1="2" x2="11" y2="13" />
+      <polygon points="22 2 15 22 11 13 2 9 22 2" />
+    </svg>
+  )
+}
+
+// ── Widget ────────────────────────────────────────────────────────────────────
+
+export function Widget({ config }: { config: WidgetConfig }) {
+  const [open, setOpen] = useState(false)
+  const [msgs, setMsgs] = useState<Msg[]>([])
+  const [input, setInput] = useState('')
+  const [busy, setBusy] = useState(false)
+  const sid = useRef(getSessionId())
+  const bottomRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
+  const isDark = config.theme === 'dark'
+
+  // Auto-scroll to latest message
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [msgs])
+
+  // Focus input when panel opens
+  useEffect(() => {
+    if (open) {
+      const t = setTimeout(() => inputRef.current?.focus(), 120)
+      return () => clearTimeout(t)
+    }
+  }, [open])
+
+  function patchMsg(id: string, patch: Partial<Omit<Msg, 'id' | 'role'>>) {
+    setMsgs(prev => prev.map(m => m.id === id ? { ...m, ...patch } : m))
+  }
+
+  const send = useCallback(async () => {
+    const text = input.trim()
+    if (!text || busy) return
+
+    setInput('')
+    setBusy(true)
+
+    // Add user bubble + empty streaming assistant placeholder immediately
+    const asgId = crypto.randomUUID()
+    setMsgs(prev => [
+      ...prev,
+      { id: crypto.randomUUID(), role: 'user', content: text, streaming: false, error: false },
+      { id: asgId, role: 'assistant', content: '', streaming: true, error: false },
+    ])
+
+    const traceId = crypto.randomUUID()
+    const sseUrl = `${config.runtimeUrl}/v1/${config.org}/${config.workflow}/trace?session_id=${traceId}`
+    const postUrl = `${config.runtimeUrl}/v1/${config.org}/${config.workflow}/${config.version}`
+
+    let textBuffer = ''
+    let closed = false
+
+    function finish() {
+      if (!closed) {
+        closed = true
+        es.close()
+        setBusy(false)
+      }
+    }
+
+    // ── SSE setup ─────────────────────────────────────────────────────────────
+    // AG-UI events have `event:` SSE line → EventSource named listeners fire.
+    // Canvas trace events have no `event:` line → silently ignored here.
+
+    const es = new EventSource(sseUrl)
+
+    es.addEventListener('TextMessageContent', (e: MessageEvent) => {
+      try { textBuffer += (JSON.parse(e.data).delta as string | undefined) ?? '' } catch { /* skip malformed */ }
+      patchMsg(asgId, { content: textBuffer })
+    })
+
+    es.addEventListener('TextMessageEnd', () => {
+      patchMsg(asgId, { streaming: false })
+    })
+
+    es.addEventListener('RunFinished', () => {
+      patchMsg(asgId, { streaming: false })
+      finish()
+    })
+
+    es.addEventListener('RunError', (e: MessageEvent) => {
+      let msg = 'An error occurred.'
+      try { msg = (JSON.parse(e.data).message as string | undefined) ?? msg } catch { /* */ }
+      patchMsg(asgId, { content: msg, streaming: false, error: true })
+      finish()
+    })
+
+    // ── Wait for SSE connection before POSTing ─────────────────────────────
+    // Queue is created server-side on SSE connect; POST must come after.
+
+    let openResolve!: () => void
+    let openReject!: (e: Error) => void
+    const openP = new Promise<void>((res, rej) => { openResolve = res; openReject = rej })
+
+    const openTimer = window.setTimeout(() => {
+      openReject(new Error('SSE connection timed out'))
+      finish()
+    }, 8000)
+
+    es.addEventListener('open', () => {
+      clearTimeout(openTimer)
+      openResolve()
+    }, { once: true })
+
+    es.onerror = () => {
+      clearTimeout(openTimer)
+      openReject(new Error('SSE connection failed'))
+      if (!closed) {
+        patchMsg(asgId, { content: 'Connection error. Please try again.', streaming: false, error: true })
+        finish()
+      }
+    }
+
+    // ── POST + wait ───────────────────────────────────────────────────────────
+    try {
+      await openP
+
+      const res = await fetch(postUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-ID': sid.current,
+          'X-Trace-Session': traceId,
+        },
+        body: JSON.stringify({
+          projectId: config.org,
+          intentKey: 'chat',
+          query: text,
+          customParams: {},
+        }),
+      })
+
+      if (!res.ok) {
+        const detail = await res.text().catch(() => `HTTP ${res.status}`)
+        throw new Error(detail)
+      }
+
+      // POST succeeded — SSE events (RunFinished / RunError) will call finish()
+      // Safety timeout: if server never sends RunFinished, clean up after 120s
+      setTimeout(() => {
+        if (!closed) {
+          patchMsg(asgId, { streaming: false })
+          finish()
+        }
+      }, 120_000)
+
+    } catch (err) {
+      if (!closed) {
+        patchMsg(asgId, {
+          content: err instanceof Error ? err.message : 'Failed to reach the agent.',
+          streaming: false,
+          error: true,
+        })
+        finish()
+      }
+    }
+  }, [input, busy, config])
+
+  function handleKey(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      void send()
+    }
+  }
+
+  // ── Render ────────────────────────────────────────────────────────────────
+
+  return (
+    <div id="agf-root">
+      <style>{WIDGET_CSS}</style>
+
+      {/* Floating toggle button */}
+      <button
+        className="agf-btn"
+        onClick={() => setOpen(o => !o)}
+        aria-label={open ? 'Close chat' : 'Open chat'}
+      >
+        {open ? <IconX /> : <IconMsg />}
+      </button>
+
+      {/* Chat panel */}
+      {open && (
+        <div className={`agf-panel${isDark ? ' dark' : ''}`} role="dialog" aria-label={config.title}>
+
+          {/* Header */}
+          <div className="agf-header">
+            <span className="agf-header-title">{config.title}</span>
+            <button className="agf-header-close" onClick={() => setOpen(false)} aria-label="Close">
+              <IconX />
+            </button>
+          </div>
+
+          {/* Messages */}
+          <div className="agf-messages" role="log" aria-live="polite">
+            {msgs.length === 0 && (
+              <div className="agf-empty">
+                <p className="agf-empty-text">Hi! How can I help you today?</p>
+              </div>
+            )}
+
+            {msgs.map(m => (
+              <div key={m.id} className={`agf-msg ${m.role}${m.error ? ' error' : ''}`}>
+                <div className="agf-bubble">
+                  {m.content}
+                  {m.streaming && m.role === 'assistant' && (
+                    <span className="agf-cursor" aria-hidden="true" />
+                  )}
+                </div>
+              </div>
+            ))}
+            <div ref={bottomRef} />
+          </div>
+
+          {/* Input footer */}
+          <div className="agf-footer">
+            <textarea
+              ref={inputRef}
+              className="agf-input"
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={handleKey}
+              placeholder="Type a message… (Enter to send)"
+              rows={1}
+              disabled={busy}
+              aria-label="Message input"
+            />
+            <button
+              className="agf-send"
+              onClick={() => void send()}
+              disabled={busy || !input.trim()}
+              aria-label="Send message"
+            >
+              <IconSend />
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}

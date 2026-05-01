@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AgentsFloor Widget — Dev</title>
+  <style>
+    body { font-family: system-ui, sans-serif; padding: 40px; color: #71717a; }
+    h2 { color: #3f3f46; margin-bottom: 8px; }
+    p { font-size: 13px; line-height: 1.6; }
+    code { background: #f4f4f5; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h2>AgentsFloor Widget — Dev Server</h2>
+  <p>The floating chat button should appear in the bottom-right corner.</p>
+  <p>Configure via <code>.env</code> (copy <code>.env.example</code>).</p>
+
+  <!--
+    In dev mode (Vite ESM), document.currentScript is null for type="module".
+    The widget reads config from VITE_DEV_* env vars instead (see widget-entry.tsx).
+  -->
+  <script type="module" src="/src/widget-entry.tsx"></script>
+</body>
+</html>
