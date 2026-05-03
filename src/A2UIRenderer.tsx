@@ -1,5 +1,5 @@
 /**
- * A2UIRenderer — renders A2UI JSON payloads as inline components in the chat widget.
+ * A2UIRenderer — renders A2UI JSON payloads using shadcn/ui + recharts + react-leaflet.
  *
  * A2UI vs AG-UI separation (CLAUDE.md §2c, non-negotiable):
  *   AG-UI = HOW to transport  (SSE event stream from FastAPI to widget)
@@ -9,9 +9,38 @@
  * Agents output A2UI JSON spec only. Zero rendering logic inside system prompts.
  * Per Decision 17: agents are stateless and presentation-agnostic.
  *
- * Zero external dependencies. All rendering via pure SVG + HTML + inline CSS
- * (dark mode handled by .agf-panel.dark cascade defined in Widget.tsx WIDGET_CSS).
+ * Dark mode: isDark prop toggles the `dark` class on the root wrapper so
+ * Tailwind `dark:` variants activate inside the component tree.
  */
+
+import 'leaflet/dist/leaflet.css'
+
+import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet'
+import L from 'leaflet'
+import {
+  BarChart as ReBarChart, Bar,
+  LineChart as ReLineChart, Line,
+  PieChart as RePieChart, Pie, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+} from 'recharts'
+
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { ScrollArea } from '@/components/ui/scroll-area'
+import { Separator } from '@/components/ui/separator'
+import {
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+} from '@/components/ui/table'
+import { cn } from '@/lib/utils'
+
+// Fix Leaflet default icon URLs in bundled environments (icons reference missing assets otherwise)
+const _DefaultIcon = L.icon({
+  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+  popupAnchor: [1, -34],
+})
+L.Marker.mergeOptions({ icon: _DefaultIcon })
 
 // ── Public type — exported so Widget.tsx can reference it ─────────────────────
 
@@ -67,22 +96,30 @@ function CardRenderer({ payload }: { payload: A2UIPayload }) {
   const d = payload.data as CardData
   if (!d?.fields?.length) return null
   return (
-    <div className="agf-a2ui agf-card">
-      {payload.title && <div className="agf-a2ui-title">{payload.title}</div>}
-      {d.image && (
-        <img
-          src={d.image}
-          alt={payload.title ?? 'card image'}
-          style={{ width: '100%', borderRadius: 6, marginBottom: 8, objectFit: 'cover', maxHeight: 120 }}
-        />
+    <Card className="w-full my-2">
+      {(payload.title || d.image) && (
+        <CardHeader className="pb-2">
+          {d.image && (
+            <img
+              src={d.image}
+              alt={payload.title ?? 'card image'}
+              className="w-full rounded object-cover max-h-28 mb-2"
+            />
+          )}
+          {payload.title && <CardTitle className="text-sm">{payload.title}</CardTitle>}
+        </CardHeader>
       )}
-      {d.fields.map((f, i) => (
-        <div key={i} className="agf-card-field">
-          <span className="agf-card-label">{f.label}</span>
-          <span className="agf-card-value">{String(f.value)}</span>
+      <CardContent className="pt-0">
+        <div className="divide-y divide-border">
+          {d.fields.map((f, i) => (
+            <div key={i} className="flex justify-between items-center py-1.5 gap-2">
+              <span className="text-xs text-muted-foreground shrink-0">{f.label}</span>
+              <span className="text-xs font-medium text-right">{String(f.value)}</span>
+            </div>
+          ))}
         </div>
-      ))}
-    </div>
+      </CardContent>
+    </Card>
   )
 }
 
@@ -92,22 +129,32 @@ function TableRenderer({ payload }: { payload: A2UIPayload }) {
   const d = payload.data as TableData
   if (!d?.headers?.length || !d?.rows?.length) return null
   return (
-    <div className="agf-a2ui">
-      {payload.title && <div className="agf-a2ui-title">{payload.title}</div>}
-      <div className="agf-table-wrap">
-        <table className="agf-table">
-          <thead>
-            <tr>{d.headers.map((h, i) => <th key={i}>{h}</th>)}</tr>
-          </thead>
-          <tbody>
+    <div className="w-full my-2">
+      {payload.title && (
+        <p className="text-xs font-semibold mb-1 text-foreground">{payload.title}</p>
+      )}
+      <ScrollArea className="w-full rounded-md border">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              {d.headers.map((h, i) => (
+                <TableHead key={i} className="text-xs whitespace-nowrap">{h}</TableHead>
+              ))}
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {d.rows.map((row, ri) => (
-              <tr key={ri}>
-                {row.map((cell, ci) => <td key={ci}>{String(cell)}</td>)}
-              </tr>
+              <TableRow key={ri}>
+                {row.map((cell, ci) => (
+                  <TableCell key={ci} className="text-xs whitespace-nowrap py-1.5">
+                    {String(cell)}
+                  </TableCell>
+                ))}
+              </TableRow>
             ))}
-          </tbody>
-        </table>
-      </div>
+          </TableBody>
+        </Table>
+      </ScrollArea>
     </div>
   )
 }
@@ -118,16 +165,22 @@ function ListRenderer({ payload }: { payload: A2UIPayload }) {
   const d = payload.data as ListData
   if (!d?.items?.length) return null
   return (
-    <div className="agf-a2ui agf-list">
-      {payload.title && <div className="agf-a2ui-title">{payload.title}</div>}
-      {d.items.map((item, i) => (
-        <div key={i} className="agf-list-item">
-          <span className="agf-list-bullet">
-            {item.icon ? item.icon : d.ordered ? `${i + 1}.` : '•'}
-          </span>
-          <span>{item.text}</span>
-        </div>
-      ))}
+    <div className="w-full my-2">
+      {payload.title && (
+        <p className="text-xs font-semibold mb-1 text-foreground">{payload.title}</p>
+      )}
+      <ScrollArea className="max-h-48 rounded-md border p-2">
+        <ul className="space-y-1">
+          {d.items.map((item, i) => (
+            <li key={i} className="flex items-start gap-2 text-xs">
+              <span className="shrink-0 text-muted-foreground">
+                {item.icon ? item.icon : d.ordered ? `${i + 1}.` : '•'}
+              </span>
+              <span>{item.text}</span>
+            </li>
+          ))}
+        </ul>
+      </ScrollArea>
     </div>
   )
 }
@@ -138,239 +191,26 @@ function TimelineRenderer({ payload }: { payload: A2UIPayload }) {
   const d = payload.data as TimelineData
   if (!d?.events?.length) return null
   return (
-    <div className="agf-a2ui agf-timeline">
-      {payload.title && <div className="agf-a2ui-title">{payload.title}</div>}
-      {d.events.map((ev, i) => (
-        <div key={i} className="agf-tl-item">
-          <div className="agf-tl-date">{ev.date}</div>
-          <div className="agf-tl-content">
-            <div className="agf-tl-event">{ev.event}</div>
-            {ev.description && <div className="agf-tl-desc">{ev.description}</div>}
-          </div>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-// ── Map (static SVG pin plot — no external map library) ───────────────────────
-
-function MapRenderer({ payload, isDark }: { payload: A2UIPayload; isDark: boolean }) {
-  const d = payload.data as MapData
-  if (!d?.pins?.length) return null
-
-  const W = 272, H = 110, PAD = 14
-  const lats = d.pins.map(p => p.lat)
-  const lngs = d.pins.map(p => p.lng)
-  const minLat = Math.min(...lats), maxLat = Math.max(...lats)
-  const minLng = Math.min(...lngs), maxLng = Math.max(...lngs)
-  const latRange = maxLat - minLat || 1
-  const lngRange = maxLng - minLng || 1
-
-  function pinX(lng: number) { return PAD + ((lng - minLng) / lngRange) * (W - PAD * 2) }
-  // SVG y grows downward; latitude grows upward → invert
-  function pinY(lat: number) { return H - PAD - ((lat - minLat) / latRange) * (H - PAD * 2) }
-
-  const bgColor  = isDark ? '#1e1e2e' : '#e8f0fe'
-  const gridColor = isDark ? '#3730a3' : '#c7d2fe'
-  const textColor = isDark ? '#818cf8' : '#3730a3'
-
-  return (
-    <div className="agf-a2ui agf-map">
-      {payload.title && <div className="agf-a2ui-title">{payload.title}</div>}
-      <svg
-        width={W} height={H}
-        style={{ display: 'block', width: '100%', height: 'auto', background: bgColor, borderRadius: 6 }}
-        aria-label="Map"
-      >
-        {/* Border */}
-        <rect x={PAD} y={PAD} width={W - PAD * 2} height={H - PAD * 2}
-          fill="none" stroke={gridColor} strokeWidth="0.5" />
-        {/* Pins */}
-        {d.pins.map((pin, i) => {
-          const x = pinX(pin.lng)
-          const y = pinY(pin.lat)
-          return (
-            <g key={i}>
-              <circle cx={x} cy={y} r={5} fill="#6366f1" />
-              <circle cx={x} cy={y} r={2.5} fill="#ffffff" />
-              {pin.label && (
-                <text x={x + 8} y={y + 4} fontSize="8" fill={textColor} fontFamily="system-ui">
-                  {pin.label}
-                </text>
-              )}
-            </g>
-          )
-        })}
-      </svg>
-      {/* Pin list below map */}
-      {d.pins.map((pin, i) => (
-        <div key={i} className="agf-map-pin">
-          <span className="agf-map-pin-icon">📍</span>
-          <span>{pin.label ?? `${pin.lat.toFixed(4)}, ${pin.lng.toFixed(4)}`}</span>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-// ── Charts — pure SVG, zero external deps ────────────────────────────────────
-
-const CHART_W = 272, CHART_H = 130
-const PAD_T = 10, PAD_R = 8, PAD_B = 28, PAD_L = 28
-const CW = CHART_W - PAD_L - PAD_R   // 236
-const CH = CHART_H - PAD_T - PAD_B   // 92
-
-function yTicks(maxVal: number, count = 4) {
-  return Array.from({ length: count + 1 }, (_, i) => (maxVal / count) * i)
-}
-
-function fmtVal(v: number) {
-  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`
-  if (v >= 1000) return `${(v / 1000).toFixed(1)}k`
-  return String(Math.round(v))
-}
-
-function BarChart({ d, isDark }: { d: ChartData; isDark: boolean }) {
-  const numGroups = d.labels.length
-  const numSeries = d.series.length
-  if (!numGroups || !numSeries) return null
-
-  const allVals = d.series.flatMap(s => s.values)
-  const maxVal = Math.max(...allVals, 1)
-  const ticks = yTicks(maxVal)
-  const groupW = CW / numGroups
-  const barMargin = groupW * 0.15
-  const barW = Math.max(3, (groupW - barMargin * 2) / numSeries)
-
-  const axisColor = isDark ? '#3f3f46' : '#d4d4d8'
-  const textColor = isDark ? '#a1a1aa' : '#71717a'
-
-  return (
-    <svg width={CHART_W} height={CHART_H} style={{ display: 'block', width: '100%', height: 'auto' }} aria-label="Bar chart">
-      {/* Y-axis grid + labels */}
-      {ticks.map((v, i) => {
-        const y = PAD_T + CH - (v / maxVal) * CH
-        return (
-          <g key={i}>
-            <line x1={PAD_L} y1={y} x2={PAD_L + CW} y2={y}
-              stroke={axisColor} strokeWidth="0.5" strokeDasharray={i === 0 ? '' : '2 2'} />
-            <text x={PAD_L - 4} y={y + 3} fontSize="7" fill={textColor}
-              textAnchor="end" fontFamily="system-ui">{fmtVal(v)}</text>
-          </g>
-        )
-      })}
-      {/* Bars */}
-      {d.series.map((s, si) =>
-        d.labels.map((_, gi) => {
-          const val = s.values[gi] ?? 0
-          const barH = (val / maxVal) * CH
-          const x = PAD_L + gi * groupW + barMargin + si * barW
-          const y = PAD_T + CH - barH
-          return (
-            <rect key={`${si}-${gi}`} x={x} y={y} width={barW - 1} height={Math.max(0, barH)}
-              fill={col(si, s.color)} rx="2" />
-          )
-        })
+    <div className="w-full my-2">
+      {payload.title && (
+        <p className="text-xs font-semibold mb-2 text-foreground">{payload.title}</p>
       )}
-      {/* X-axis labels */}
-      {d.labels.map((label, i) => {
-        const x = PAD_L + i * groupW + groupW / 2
-        const display = label.length > 9 ? label.slice(0, 8) + '…' : label
-        return (
-          <text key={i} x={x} y={CHART_H - 6} fontSize="7" fill={textColor}
-            textAnchor="middle" fontFamily="system-ui">{display}</text>
-        )
-      })}
-    </svg>
-  )
-}
-
-function LineChart({ d, isDark }: { d: ChartData; isDark: boolean }) {
-  const numGroups = d.labels.length
-  const numSeries = d.series.length
-  if (numGroups < 2 || !numSeries) return null
-
-  const allVals = d.series.flatMap(s => s.values)
-  const maxVal = Math.max(...allVals, 1)
-  const ticks = yTicks(maxVal)
-
-  const axisColor = isDark ? '#3f3f46' : '#d4d4d8'
-  const textColor = isDark ? '#a1a1aa' : '#71717a'
-
-  function px(gi: number) { return PAD_L + (gi / (numGroups - 1)) * CW }
-  function py(v: number)  { return PAD_T + CH - (v / maxVal) * CH }
-
-  return (
-    <svg width={CHART_W} height={CHART_H} style={{ display: 'block', width: '100%', height: 'auto' }} aria-label="Line chart">
-      {ticks.map((v, i) => {
-        const y = py(v)
-        return (
-          <g key={i}>
-            <line x1={PAD_L} y1={y} x2={PAD_L + CW} y2={y}
-              stroke={axisColor} strokeWidth="0.5" strokeDasharray={i === 0 ? '' : '2 2'} />
-            <text x={PAD_L - 4} y={y + 3} fontSize="7" fill={textColor}
-              textAnchor="end" fontFamily="system-ui">{fmtVal(v)}</text>
-          </g>
-        )
-      })}
-      {d.series.map((s, si) => {
-        const c = col(si, s.color)
-        const pts = s.values.map((v, gi) => `${px(gi)},${py(v)}`).join(' ')
-        return (
-          <g key={si}>
-            <polyline points={pts} fill="none" stroke={c} strokeWidth="2"
-              strokeLinejoin="round" strokeLinecap="round" />
-            {s.values.map((v, gi) => (
-              <circle key={gi} cx={px(gi)} cy={py(v)} r={3} fill={c} />
-            ))}
-          </g>
-        )
-      })}
-      {d.labels.map((label, i) => {
-        const display = label.length > 9 ? label.slice(0, 8) + '…' : label
-        return (
-          <text key={i} x={px(i)} y={CHART_H - 6} fontSize="7" fill={textColor}
-            textAnchor="middle" fontFamily="system-ui">{display}</text>
-        )
-      })}
-    </svg>
-  )
-}
-
-function PieChart({ d }: { d: ChartData }) {
-  const vals = d.series[0]?.values ?? []
-  if (!vals.length) return null
-
-  const total = vals.reduce((a, b) => a + b, 0) || 1
-  const CX = 65, CY = 65, R = 52, SZ = 130
-
-  let cumAngle = -Math.PI / 2
-  const slices = vals.map((v, i) => {
-    const angle = (v / total) * 2 * Math.PI
-    const start = cumAngle
-    const end = cumAngle + angle
-    cumAngle = end
-    const large = angle > Math.PI ? 1 : 0
-    const x1 = CX + R * Math.cos(start), y1 = CY + R * Math.sin(start)
-    const x2 = CX + R * Math.cos(end),   y2 = CY + R * Math.sin(end)
-    const path = `M${CX},${CY} L${x1.toFixed(2)},${y1.toFixed(2)} A${R},${R} 0 ${large} 1 ${x2.toFixed(2)},${y2.toFixed(2)} Z`
-    const pct = Math.round((v / total) * 100)
-    return { path, color: col(i, d.series[0]?.color), label: d.labels[i] ?? `Slice ${i + 1}`, pct }
-  })
-
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-      <svg width={SZ} height={SZ} style={{ flexShrink: 0 }} aria-label="Pie chart">
-        {slices.map((s, i) => (
-          <path key={i} d={s.path} fill={s.color} stroke="#ffffff" strokeWidth="1.5" />
-        ))}
-      </svg>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-        {slices.map((s, i) => (
-          <div key={i} className="agf-chart-legend-item">
-            <div className="agf-chart-legend-dot" style={{ background: s.color }} />
-            <span>{s.label} ({s.pct}%)</span>
+      <div className="space-y-0">
+        {d.events.map((ev, i) => (
+          <div key={i} className="flex gap-3">
+            <div className="flex flex-col items-center">
+              <div className="h-2 w-2 rounded-full bg-primary mt-1 shrink-0" />
+              {i < d.events.length - 1 && (
+                <Separator orientation="vertical" className="flex-1 my-1" />
+              )}
+            </div>
+            <div className="pb-3">
+              <p className="text-xs font-semibold text-muted-foreground">{ev.date}</p>
+              <p className="text-xs font-medium">{ev.event}</p>
+              {ev.description && (
+                <p className="text-xs text-muted-foreground mt-0.5">{ev.description}</p>
+              )}
+            </div>
           </div>
         ))}
       </div>
@@ -378,33 +218,129 @@ function PieChart({ d }: { d: ChartData }) {
   )
 }
 
+// ── Map (react-leaflet + OpenStreetMap, no API key required) ──────────────────
+
+function MapRenderer({ payload }: { payload: A2UIPayload }) {
+  const d = payload.data as MapData
+  if (!d?.pins?.length) return null
+
+  const lats = d.pins.map(p => p.lat)
+  const lngs = d.pins.map(p => p.lng)
+  const centerLat = (Math.min(...lats) + Math.max(...lats)) / 2
+  const centerLng = (Math.min(...lngs) + Math.max(...lngs)) / 2
+  const zoom = d.pins.length === 1 ? 12 : 5
+
+  return (
+    <div className="w-full my-2">
+      {payload.title && (
+        <p className="text-xs font-semibold mb-1 text-foreground">{payload.title}</p>
+      )}
+      <div className="rounded-md overflow-hidden border" style={{ height: 200 }}>
+        <MapContainer
+          center={[centerLat, centerLng]}
+          zoom={zoom}
+          style={{ height: '100%', width: '100%' }}
+          scrollWheelZoom={false}
+        >
+          <TileLayer
+            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          />
+          {d.pins.map((pin, i) => (
+            <Marker key={i} position={[pin.lat, pin.lng]}>
+              {pin.label && <Popup>{pin.label}</Popup>}
+            </Marker>
+          ))}
+        </MapContainer>
+      </div>
+      {d.pins.map((pin, i) => (
+        <div key={i} className="flex items-center gap-1 text-xs text-muted-foreground mt-0.5">
+          <span>📍</span>
+          <span>{pin.label ?? `${pin.lat.toFixed(4)}, ${pin.lng.toFixed(4)}`}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ── Charts (recharts) ─────────────────────────────────────────────────────────
+
 function ChartRenderer({ payload, isDark }: { payload: A2UIPayload; isDark: boolean }) {
   const d = payload.data as ChartData
   if (!d?.series?.length || !d?.labels?.length) return null
 
   const chartType = d.chartType ?? 'bar'
-  const showLegend = d.series.length > 1 && chartType !== 'pie'
+  const axisColor = isDark ? '#71717a' : '#a1a1aa'
+  const gridColor = isDark ? '#3f3f46' : '#e4e4e7'
+
+  // Reshape data into recharts format: [{name: 'label', SeriesA: val, SeriesB: val}]
+  const chartData = d.labels.map((label, li) => {
+    const entry: Record<string, string | number> = { name: label }
+    d.series.forEach(s => { entry[s.name] = s.values[li] ?? 0 })
+    return entry
+  })
+
+  const pieData = d.labels.map((label, i) => ({
+    name: label,
+    value: d.series[0]?.values[i] ?? 0,
+  }))
 
   return (
-    <div className="agf-a2ui agf-chart">
-      {payload.title && <div className="agf-a2ui-title">{payload.title}</div>}
-      {chartType === 'bar'  && <BarChart  d={d} isDark={isDark} />}
-      {chartType === 'line' && <LineChart d={d} isDark={isDark} />}
-      {chartType === 'pie'  && <PieChart  d={d} />}
-      {/* Fallback for unknown chartType */}
-      {chartType !== 'bar' && chartType !== 'line' && chartType !== 'pie' && (
-        <BarChart d={d} isDark={isDark} />
+    <div className="w-full my-2">
+      {payload.title && (
+        <p className="text-xs font-semibold mb-1 text-foreground">{payload.title}</p>
       )}
-      {showLegend && (
-        <div className="agf-chart-legend">
-          {d.series.map((s, i) => (
-            <div key={i} className="agf-chart-legend-item">
-              <div className="agf-chart-legend-dot" style={{ background: col(i, s.color) }} />
-              <span>{s.name}</span>
-            </div>
-          ))}
-        </div>
-      )}
+      <div style={{ width: '100%', height: 160 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          {chartType === 'line' ? (
+            <ReLineChart data={chartData} margin={{ top: 4, right: 8, left: -16, bottom: 4 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
+              <XAxis dataKey="name" tick={{ fontSize: 9, fill: axisColor }} />
+              <YAxis tick={{ fontSize: 9, fill: axisColor }} />
+              <Tooltip contentStyle={{ fontSize: 10 }} />
+              {d.series.length > 1 && <Legend iconSize={8} wrapperStyle={{ fontSize: 9 }} />}
+              {d.series.map((s, i) => (
+                <Line
+                  key={s.name}
+                  type="monotone"
+                  dataKey={s.name}
+                  stroke={col(i, s.color)}
+                  strokeWidth={2}
+                  dot={{ r: 3 }}
+                />
+              ))}
+            </ReLineChart>
+          ) : chartType === 'pie' ? (
+            <RePieChart>
+              <Pie
+                data={pieData}
+                cx="50%"
+                cy="50%"
+                outerRadius={55}
+                dataKey="value"
+              >
+                {pieData.map((_, i) => (
+                  <Cell key={i} fill={col(i, d.series[0]?.color)} />
+                ))}
+              </Pie>
+              <Tooltip contentStyle={{ fontSize: 10 }} />
+              <Legend iconSize={8} wrapperStyle={{ fontSize: 9 }} />
+            </RePieChart>
+          ) : (
+            /* bar (default) */
+            <ReBarChart data={chartData} margin={{ top: 4, right: 8, left: -16, bottom: 4 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
+              <XAxis dataKey="name" tick={{ fontSize: 9, fill: axisColor }} />
+              <YAxis tick={{ fontSize: 9, fill: axisColor }} />
+              <Tooltip contentStyle={{ fontSize: 10 }} />
+              {d.series.length > 1 && <Legend iconSize={8} wrapperStyle={{ fontSize: 9 }} />}
+              {d.series.map((s, i) => (
+                <Bar key={s.name} dataKey={s.name} fill={col(i, s.color)} radius={[2, 2, 0, 0]} />
+              ))}
+            </ReBarChart>
+          )}
+        </ResponsiveContainer>
+      </div>
     </div>
   )
 }
@@ -413,7 +349,7 @@ function ChartRenderer({ payload, isDark }: { payload: A2UIPayload; isDark: bool
 
 function PlainRenderer({ payload }: { payload: A2UIPayload }) {
   return (
-    <div className="agf-a2ui agf-card" style={{ color: '#71717a', fontSize: 11 }}>
+    <div className="w-full my-2 rounded-md border p-2 text-xs text-muted-foreground">
       {String(payload.data)}
     </div>
   )
@@ -422,13 +358,20 @@ function PlainRenderer({ payload }: { payload: A2UIPayload }) {
 // ── Main export ───────────────────────────────────────────────────────────────
 
 export function A2UIRenderer({ payload, isDark }: { payload: A2UIPayload; isDark: boolean }) {
-  switch (payload.type) {
-    case 'card':      return <CardRenderer payload={payload} />
-    case 'table':     return <TableRenderer payload={payload} />
-    case 'list':      return <ListRenderer payload={payload} />
-    case 'timeline':  return <TimelineRenderer payload={payload} />
-    case 'map':       return <MapRenderer payload={payload} isDark={isDark} />
-    case 'chart':     return <ChartRenderer payload={payload} isDark={isDark} />
-    default:          return <PlainRenderer payload={payload} />
-  }
+  return (
+    // Toggle `dark` class so Tailwind dark: variants activate based on isDark prop
+    <div className={cn('a2ui-root', isDark && 'dark')}>
+      {(() => {
+        switch (payload.type) {
+          case 'card':     return <CardRenderer payload={payload} />
+          case 'table':    return <TableRenderer payload={payload} />
+          case 'list':     return <ListRenderer payload={payload} />
+          case 'timeline': return <TimelineRenderer payload={payload} />
+          case 'map':      return <MapRenderer payload={payload} />
+          case 'chart':    return <ChartRenderer payload={payload} isDark={isDark} />
+          default:         return <PlainRenderer payload={payload} />
+        }
+      })()}
+    </div>
+  )
 }
