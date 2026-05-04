@@ -381,7 +381,7 @@ function IconSend() {
 // Mirrors Python _A2UI_COMPONENT_TYPES in agent-runtime/core/workflow.py.
 // Add new component types here and in the Python constant — nowhere else.
 
-const A2UI_TYPES = new Set(['card', 'table', 'list', 'timeline', 'map', 'chart', 'accordion', 'tabs', 'progress', 'badge'])
+const A2UI_TYPES = new Set(['card', 'table', 'list', 'timeline', 'map', 'chart', 'accordion', 'tabs', 'progress', 'badge', 'actions'])
 
 function isA2UIJson(content: string): boolean {
   if (!content) return false
@@ -427,23 +427,19 @@ export function Widget({ config }: { config: WidgetConfig }) {
     }
   }, [open])
 
-  function patchMsg(id: string, patch: Partial<Omit<Msg, 'id' | 'role'>>) {
-    setMsgs(prev => prev.map(m => m.id === id ? { ...m, ...patch } : m))
-  }
-
-  // Appends a single A2UI block to a message — called per A2UIContent SSE event.
-  function appendA2UIBlock(id: string, block: A2UIPayload) {
-    setMsgs(prev => prev.map(m =>
-      m.id === id ? { ...m, a2uiBlocks: [...(m.a2uiBlocks ?? []), block] } : m
-    ))
-  }
-
-  const send = useCallback(async () => {
-    const text = input.trim()
+  // sendPrompt — core SSE + POST logic. Called by send() (user types) and onAction (button click).
+  const sendPrompt = useCallback(async (text: string) => {
     if (!text || busy) return
-
-    setInput('')
     setBusy(true)
+
+    function _patch(id: string, patch: Partial<Omit<Msg, 'id' | 'role'>>) {
+      setMsgs(prev => prev.map(m => m.id === id ? { ...m, ...patch } : m))
+    }
+    function _appendBlock(id: string, block: A2UIPayload) {
+      setMsgs(prev => prev.map(m =>
+        m.id === id ? { ...m, a2uiBlocks: [...(m.a2uiBlocks ?? []), block] } : m
+      ))
+    }
 
     // Add user bubble + empty streaming assistant placeholder immediately
     const asgId = crypto.randomUUID()
@@ -476,22 +472,22 @@ export function Widget({ config }: { config: WidgetConfig }) {
 
     es.addEventListener('TextMessageContent', (e: MessageEvent) => {
       try { textBuffer += (JSON.parse(e.data).delta as string | undefined) ?? '' } catch { /* skip malformed */ }
-      patchMsg(asgId, { content: textBuffer })
+      _patch(asgId, { content: textBuffer })
     })
 
     es.addEventListener('TextMessageEnd', () => {
-      patchMsg(asgId, { streaming: false })
+      _patch(asgId, { streaming: false })
     })
 
     es.addEventListener('RunFinished', () => {
-      patchMsg(asgId, { streaming: false })
+      _patch(asgId, { streaming: false })
       finish()
     })
 
     es.addEventListener('RunError', (e: MessageEvent) => {
       let msg = 'An error occurred.'
       try { msg = (JSON.parse(e.data).message as string | undefined) ?? msg } catch { /* */ }
-      patchMsg(asgId, { content: msg, streaming: false, error: true })
+      _patch(asgId, { content: msg, streaming: false, error: true })
       finish()
     })
 
@@ -501,7 +497,7 @@ export function Widget({ config }: { config: WidgetConfig }) {
     es.addEventListener('A2UIContent', (e: MessageEvent) => {
       try {
         const block = JSON.parse(e.data) as A2UIPayload
-        appendA2UIBlock(asgId, block)
+        _appendBlock(asgId, block)
       } catch { /* skip malformed A2UI payloads */ }
     })
 
@@ -526,7 +522,7 @@ export function Widget({ config }: { config: WidgetConfig }) {
       clearTimeout(openTimer)
       openReject(new Error('SSE connection failed'))
       if (!closed) {
-        patchMsg(asgId, { content: 'Connection error. Please try again.', streaming: false, error: true })
+        _patch(asgId, { content: 'Connection error. Please try again.', streaming: false, error: true })
         finish()
       }
     }
@@ -565,14 +561,14 @@ export function Widget({ config }: { config: WidgetConfig }) {
       // Safety timeout: if server never sends RunFinished, clean up after 120s
       setTimeout(() => {
         if (!closed) {
-          patchMsg(asgId, { streaming: false })
+          _patch(asgId, { streaming: false })
           finish()
         }
       }, 120_000)
 
     } catch (err) {
       if (!closed) {
-        patchMsg(asgId, {
+        _patch(asgId, {
           content: err instanceof Error ? err.message : 'Failed to reach the agent.',
           streaming: false,
           error: true,
@@ -580,7 +576,14 @@ export function Widget({ config }: { config: WidgetConfig }) {
         finish()
       }
     }
-  }, [input, busy, config])
+  }, [busy, config])
+
+  const send = useCallback(async () => {
+    const text = input.trim()
+    if (!text) return
+    setInput('')
+    void sendPrompt(text)
+  }, [input, sendPrompt])
 
   function handleKey(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -637,7 +640,7 @@ export function Widget({ config }: { config: WidgetConfig }) {
                 )}
                 {/* A2UI structured components — rendered in sequence below text */}
                 {m.a2uiBlocks?.map((block, i) => (
-                  <A2UIRenderer key={i} payload={block} isDark={isDark} />
+                  <A2UIRenderer key={i} payload={block} isDark={isDark} onAction={sendPrompt} />
                 ))}
               </div>
             ))}

@@ -47,7 +47,7 @@ L.Marker.mergeOptions({ icon: _DefaultIcon })
 // ── Public type — exported so Widget.tsx can reference it ─────────────────────
 
 export interface A2UIPayload {
-  type: 'card' | 'table' | 'list' | 'timeline' | 'map' | 'chart' | 'accordion' | 'tabs' | 'progress' | 'badge'
+  type: 'card' | 'table' | 'list' | 'timeline' | 'map' | 'chart' | 'accordion' | 'tabs' | 'progress' | 'badge' | 'actions'
   data: unknown
   title?: string
   theme?: 'default' | 'compact' | 'detailed'
@@ -98,6 +98,10 @@ interface ProgressData {
 
 interface BadgeGroupData {
   items: Array<{ text: string; variant?: 'default' | 'secondary' | 'outline' }>
+}
+
+interface ActionsData {
+  buttons: Array<{ label: string; message: string; variant?: 'default' | 'outline' | 'secondary' }>
 }
 
 // ── Colour palette ────────────────────────────────────────────────────────────
@@ -393,7 +397,7 @@ function AccordionRenderer({ payload }: { payload: A2UIPayload }) {
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
 
-function TabsRenderer({ payload, isDark }: { payload: A2UIPayload; isDark: boolean }) {
+function TabsRenderer({ payload, isDark, onAction }: { payload: A2UIPayload; isDark: boolean; onAction?: (message: string) => void }) {
   const [active, setActive] = useState(0)
   const d = payload.data as TabsData
   if (!d?.tabs?.length) return null
@@ -403,9 +407,9 @@ function TabsRenderer({ payload, isDark }: { payload: A2UIPayload; isDark: boole
       return <p className="text-xs leading-relaxed">{content}</p>
     }
     if (Array.isArray(content)) {
-      return <>{content.map((c, i) => <A2UIRenderer key={i} payload={c} isDark={isDark} />)}</>
+      return <>{content.map((c, i) => <A2UIRenderer key={i} payload={c} isDark={isDark} onAction={onAction} />)}</>
     }
-    return <A2UIRenderer payload={content} isDark={isDark} />
+    return <A2UIRenderer payload={content} isDark={isDark} onAction={onAction} />
   }
 
   return (
@@ -492,6 +496,38 @@ function BadgeGroupRenderer({ payload }: { payload: A2UIPayload }) {
   )
 }
 
+// ── Actions ───────────────────────────────────────────────────────────────────
+
+function ActionsRenderer({ payload, onAction }: { payload: A2UIPayload; onAction?: (message: string) => void }) {
+  const d = payload.data as ActionsData
+  if (!d?.buttons?.length) return null
+  return (
+    <div className="w-full my-2">
+      {payload.title && (
+        <p className="text-xs font-medium text-muted-foreground mb-2">{payload.title}</p>
+      )}
+      <div className="flex flex-wrap gap-2">
+        {d.buttons.map((btn, i) => (
+          <button
+            key={i}
+            onClick={() => onAction?.(btn.message)}
+            className={cn(
+              'inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors cursor-pointer',
+              btn.variant === 'secondary'
+                ? 'bg-secondary text-secondary-foreground border-secondary hover:bg-secondary/80'
+                : btn.variant === 'outline'
+                  ? 'bg-transparent border-border text-foreground hover:bg-muted'
+                  : 'bg-primary text-primary-foreground border-primary hover:bg-primary/90',
+            )}
+          >
+            {btn.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // ── Fallback for unrecognised type ────────────────────────────────────────────
 
 function PlainRenderer({ payload }: { payload: A2UIPayload }) {
@@ -504,7 +540,7 @@ function PlainRenderer({ payload }: { payload: A2UIPayload }) {
 
 // ── Main export ───────────────────────────────────────────────────────────────
 
-export function A2UIRenderer({ payload, isDark }: { payload: A2UIPayload; isDark: boolean }) {
+export function A2UIRenderer({ payload, isDark, onAction }: { payload: A2UIPayload; isDark: boolean; onAction?: (message: string) => void }) {
   return (
     // Toggle `dark` class so Tailwind dark: variants activate based on isDark prop
     <div className={cn('a2ui-root', isDark && 'dark')}>
@@ -517,9 +553,10 @@ export function A2UIRenderer({ payload, isDark }: { payload: A2UIPayload; isDark
           case 'map':       return <MapRenderer payload={payload} />
           case 'chart':     return <ChartRenderer payload={payload} isDark={isDark} />
           case 'accordion': return <AccordionRenderer payload={payload} />
-          case 'tabs':      return <TabsRenderer payload={payload} isDark={isDark} />
+          case 'tabs':      return <TabsRenderer payload={payload} isDark={isDark} onAction={onAction} />
           case 'progress':  return <ProgressRenderer payload={payload} />
           case 'badge':     return <BadgeGroupRenderer payload={payload} />
+          case 'actions':   return <ActionsRenderer payload={payload} onAction={onAction} />
           default:          return <PlainRenderer payload={payload} />
         }
       })()}
