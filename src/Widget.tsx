@@ -381,17 +381,22 @@ function IconSend() {
 // Mirrors Python _A2UI_COMPONENT_TYPES in agent-runtime/core/workflow.py.
 // Add new component types here and in the Python constant — nowhere else.
 
-const A2UI_TYPES = new Set(['card', 'table', 'list', 'timeline', 'map', 'chart'])
+const A2UI_TYPES = new Set(['card', 'table', 'list', 'timeline', 'map', 'chart', 'accordion', 'tabs', 'progress', 'badge'])
 
 function isA2UIJson(content: string): boolean {
   if (!content) return false
   try {
     const parsed: unknown = JSON.parse(content)
-    return (
-      typeof parsed === 'object' &&
-      parsed !== null &&
-      A2UI_TYPES.has((parsed as Record<string, unknown>).type as string)
-    )
+    if (typeof parsed !== 'object' || parsed === null) return false
+    // Array: all elements must be valid A2UI components
+    if (Array.isArray(parsed)) {
+      return parsed.length > 0 && parsed.every(
+        item => typeof item === 'object' && item !== null && !Array.isArray(item) &&
+          A2UI_TYPES.has((item as Record<string, unknown>).type as string)
+      )
+    }
+    // Single object
+    return A2UI_TYPES.has((parsed as Record<string, unknown>).type as string)
   } catch {
     return false
   }

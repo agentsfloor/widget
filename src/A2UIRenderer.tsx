@@ -13,6 +13,7 @@
  * Tailwind `dark:` variants activate inside the component tree.
  */
 
+import { useState } from 'react'
 import 'leaflet/dist/leaflet.css'
 
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet'
@@ -30,6 +31,7 @@ import { Separator } from '@/components/ui/separator'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
+import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 
 // Fix Leaflet default icon URLs in bundled environments (icons reference missing assets otherwise)
@@ -45,7 +47,7 @@ L.Marker.mergeOptions({ icon: _DefaultIcon })
 // ── Public type — exported so Widget.tsx can reference it ─────────────────────
 
 export interface A2UIPayload {
-  type: 'card' | 'table' | 'list' | 'timeline' | 'map' | 'chart'
+  type: 'card' | 'table' | 'list' | 'timeline' | 'map' | 'chart' | 'accordion' | 'tabs' | 'progress' | 'badge'
   data: unknown
   title?: string
   theme?: 'default' | 'compact' | 'detailed'
@@ -80,6 +82,22 @@ interface ChartData {
   chartType: 'bar' | 'line' | 'pie'
   labels: string[]
   series: Array<{ name: string; values: number[]; color?: string }>
+}
+
+interface AccordionData {
+  items: Array<{ question: string; answer: string }>
+}
+
+interface TabsData {
+  tabs: Array<{ label: string; content: string | A2UIPayload | A2UIPayload[] }>
+}
+
+interface ProgressData {
+  items: Array<{ label: string; value: number }>
+}
+
+interface BadgeGroupData {
+  items: Array<{ text: string; variant?: 'default' | 'secondary' | 'outline' }>
 }
 
 // ── Colour palette ────────────────────────────────────────────────────────────
@@ -345,6 +363,135 @@ function ChartRenderer({ payload, isDark }: { payload: A2UIPayload; isDark: bool
   )
 }
 
+// ── Accordion ─────────────────────────────────────────────────────────────────
+// Uses native <details>/<summary> — no state required, no extra shadcn deps.
+
+function AccordionRenderer({ payload }: { payload: A2UIPayload }) {
+  const d = payload.data as AccordionData
+  if (!d?.items?.length) return null
+  return (
+    <div className="w-full my-2">
+      {payload.title && (
+        <p className="text-xs font-semibold mb-1 text-foreground">{payload.title}</p>
+      )}
+      <div className="space-y-1">
+        {d.items.map((item, i) => (
+          <details key={i} className="rounded-md border border-border overflow-hidden">
+            <summary className="cursor-pointer px-3 py-2 text-xs font-medium bg-muted hover:bg-muted/80 select-none list-none flex items-center justify-between">
+              <span>{item.question}</span>
+              <span className="text-muted-foreground ml-2 shrink-0">›</span>
+            </summary>
+            <div className="px-3 py-2 text-xs text-muted-foreground leading-relaxed bg-background">
+              {item.answer}
+            </div>
+          </details>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ── Tabs ──────────────────────────────────────────────────────────────────────
+
+function TabsRenderer({ payload, isDark }: { payload: A2UIPayload; isDark: boolean }) {
+  const [active, setActive] = useState(0)
+  const d = payload.data as TabsData
+  if (!d?.tabs?.length) return null
+
+  function renderContent(content: string | A2UIPayload | A2UIPayload[]) {
+    if (typeof content === 'string') {
+      return <p className="text-xs leading-relaxed">{content}</p>
+    }
+    if (Array.isArray(content)) {
+      return <>{content.map((c, i) => <A2UIRenderer key={i} payload={c} isDark={isDark} />)}</>
+    }
+    return <A2UIRenderer payload={content} isDark={isDark} />
+  }
+
+  return (
+    <div className="w-full my-2">
+      {payload.title && (
+        <p className="text-xs font-semibold mb-1 text-foreground">{payload.title}</p>
+      )}
+      <div className="rounded-md border border-border overflow-hidden">
+        <div className="flex border-b border-border bg-muted overflow-x-auto">
+          {d.tabs.map((tab, i) => (
+            <button
+              key={i}
+              onClick={() => setActive(i)}
+              className={cn(
+                'px-3 py-1.5 text-xs font-medium whitespace-nowrap shrink-0 border-b-2 -mb-px transition-colors',
+                i === active
+                  ? 'border-primary text-primary bg-background'
+                  : 'border-transparent text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+        <div className="p-3">
+          {d.tabs[active] ? renderContent(d.tabs[active].content) : null}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Progress ──────────────────────────────────────────────────────────────────
+
+function ProgressRenderer({ payload }: { payload: A2UIPayload }) {
+  const d = payload.data as ProgressData
+  if (!d?.items?.length) return null
+  return (
+    <div className="w-full my-2">
+      {payload.title && (
+        <p className="text-xs font-semibold mb-1 text-foreground">{payload.title}</p>
+      )}
+      <div className="space-y-2">
+        {d.items.map((item, i) => {
+          const pct = Math.max(0, Math.min(100, item.value))
+          return (
+            <div key={i}>
+              <div className="flex justify-between items-center mb-0.5">
+                <span className="text-xs text-muted-foreground">{item.label}</span>
+                <span className="text-xs font-medium">{pct}%</span>
+              </div>
+              <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-primary rounded-full"
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// ── Badge group ───────────────────────────────────────────────────────────────
+
+function BadgeGroupRenderer({ payload }: { payload: A2UIPayload }) {
+  const d = payload.data as BadgeGroupData
+  if (!d?.items?.length) return null
+  return (
+    <div className="w-full my-2">
+      {payload.title && (
+        <p className="text-xs font-semibold mb-1 text-foreground">{payload.title}</p>
+      )}
+      <div className="flex flex-wrap gap-1.5">
+        {d.items.map((item, i) => (
+          <Badge key={i} variant={item.variant ?? 'secondary'} className="text-xs">
+            {item.text}
+          </Badge>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // ── Fallback for unrecognised type ────────────────────────────────────────────
 
 function PlainRenderer({ payload }: { payload: A2UIPayload }) {
@@ -363,13 +510,17 @@ export function A2UIRenderer({ payload, isDark }: { payload: A2UIPayload; isDark
     <div className={cn('a2ui-root', isDark && 'dark')}>
       {(() => {
         switch (payload.type) {
-          case 'card':     return <CardRenderer payload={payload} />
-          case 'table':    return <TableRenderer payload={payload} />
-          case 'list':     return <ListRenderer payload={payload} />
-          case 'timeline': return <TimelineRenderer payload={payload} />
-          case 'map':      return <MapRenderer payload={payload} />
-          case 'chart':    return <ChartRenderer payload={payload} isDark={isDark} />
-          default:         return <PlainRenderer payload={payload} />
+          case 'card':      return <CardRenderer payload={payload} />
+          case 'table':     return <TableRenderer payload={payload} />
+          case 'list':      return <ListRenderer payload={payload} />
+          case 'timeline':  return <TimelineRenderer payload={payload} />
+          case 'map':       return <MapRenderer payload={payload} />
+          case 'chart':     return <ChartRenderer payload={payload} isDark={isDark} />
+          case 'accordion': return <AccordionRenderer payload={payload} />
+          case 'tabs':      return <TabsRenderer payload={payload} isDark={isDark} />
+          case 'progress':  return <ProgressRenderer payload={payload} />
+          case 'badge':     return <BadgeGroupRenderer payload={payload} />
+          default:          return <PlainRenderer payload={payload} />
         }
       })()}
     </div>
