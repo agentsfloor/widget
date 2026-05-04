@@ -55,7 +55,7 @@ function getSessionId(): string {
 // Injected as a <style> tag so the widget is self-contained regardless of host CSS
 
 const WIDGET_CSS = `
-#agf-root * { box-sizing: border-box; margin: 0; padding: 0; }
+#agf-root * { box-sizing: border-box; }
 #agf-root { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
 
 .agf-btn {
