@@ -24,6 +24,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Widget, type WidgetConfig } from './Widget'
+import './index.css'
 
 // Read synchronously at IIFE evaluation time — must be before any async.
 const scriptEl = document.currentScript as HTMLScriptElement | null

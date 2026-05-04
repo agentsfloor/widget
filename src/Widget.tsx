@@ -455,82 +455,79 @@ export function Widget({ config }: { config: WidgetConfig }) {
 
     let textBuffer = ''
     let closed = false
+    const ctrl = new AbortController()
 
     function finish() {
       if (!closed) {
         closed = true
-        es.close()
+        ctrl.abort()
         setBusy(false)
       }
     }
 
-    // ── SSE setup ─────────────────────────────────────────────────────────────
-    // AG-UI events have `event:` SSE line → EventSource named listeners fire.
-    // Canvas trace events have no `event:` line → silently ignored here.
-
-    const es = new EventSource(sseUrl)
-
-    es.addEventListener('TextMessageContent', (e: MessageEvent) => {
-      try { textBuffer += (JSON.parse(e.data).delta as string | undefined) ?? '' } catch { /* skip malformed */ }
-      _patch(asgId, { content: textBuffer })
-    })
-
-    es.addEventListener('TextMessageEnd', () => {
-      _patch(asgId, { streaming: false })
-    })
-
-    es.addEventListener('RunFinished', () => {
-      _patch(asgId, { streaming: false })
-      finish()
-    })
-
-    es.addEventListener('RunError', (e: MessageEvent) => {
-      let msg = 'An error occurred.'
-      try { msg = (JSON.parse(e.data).message as string | undefined) ?? msg } catch { /* */ }
-      _patch(asgId, { content: msg, streaming: false, error: true })
-      finish()
-    })
-
-    // A2UIContent — agent emitted a structured UI component (card/table/list/timeline/map/chart).
-    // Parsed and appended to this message's a2uiBlocks; rendered below text by A2UIRenderer.
-    // Multiple A2UIContent events in one response → multiple blocks rendered in sequence.
-    es.addEventListener('A2UIContent', (e: MessageEvent) => {
-      try {
-        const block = JSON.parse(e.data) as A2UIPayload
-        _appendBlock(asgId, block)
-      } catch { /* skip malformed A2UI payloads */ }
-    })
-
-    // ── Wait for SSE connection before POSTing ─────────────────────────────
-    // Queue is created server-side on SSE connect; POST must come after.
-
-    let openResolve!: () => void
-    let openReject!: (e: Error) => void
-    const openP = new Promise<void>((res, rej) => { openResolve = res; openReject = rej })
-
-    const openTimer = window.setTimeout(() => {
-      openReject(new Error('SSE connection timed out'))
-      finish()
-    }, 30000)
-
-    es.addEventListener('open', () => {
-      clearTimeout(openTimer)
-      openResolve()
-    }, { once: true })
-
-    es.onerror = () => {
-      clearTimeout(openTimer)
-      openReject(new Error('SSE connection failed'))
-      if (!closed) {
-        _patch(asgId, { content: 'Connection error. Please try again.', streaming: false, error: true })
-        finish()
-      }
-    }
-
-    // ── POST + wait ───────────────────────────────────────────────────────────
     try {
-      await openP
+      // ── Step 1: open SSE stream (GET) — creates TRACE_QUEUES entry server-side ──
+      // Using fetch+ReadableStream instead of EventSource so we can explicitly parse
+      // both `event:` and `data:` lines from each \n\n-separated SSE block.
+      const sseRes = await fetch(sseUrl, { signal: ctrl.signal })
+      if (!sseRes.ok || !sseRes.body) throw new Error(`SSE connection failed: ${sseRes.status}`)
 
+      // ── Step 2: parse SSE stream in background ────────────────────────────────
+      const reader = sseRes.body.getReader()
+      const decoder = new TextDecoder()
+      let buf = ''
+
+      const sseLoop = (async () => {
+        try {
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            buf += decoder.decode(value, { stream: true })
+            // Split on double-newline — SSE block separator
+            const blocks = buf.split('\n\n')
+            buf = blocks.pop() ?? ''  // keep incomplete trailing block
+            for (const block of blocks) {
+              if (!block.trim()) continue
+              // Parse event: and data: lines from this SSE block
+              let eventType = ''
+              let data = ''
+              for (const line of block.split('\n')) {
+                if (line.startsWith('event: ')) eventType = line.slice(7).trim()
+                else if (line.startsWith('data: ')) data = line.slice(6).trim()
+              }
+              if (!eventType || !data) continue
+              // Dispatch by AG-UI event type
+              if (eventType === 'TextMessageContent') {
+                try { textBuffer += (JSON.parse(data).delta as string | undefined) ?? '' } catch { /* skip malformed */ }
+                _patch(asgId, { content: textBuffer })
+              } else if (eventType === 'TextMessageStart') {
+                // streaming: true already set — no-op
+              } else if (eventType === 'TextMessageEnd') {
+                _patch(asgId, { streaming: false })
+              } else if (eventType === 'A2UIContent') {
+                try {
+                  _appendBlock(asgId, JSON.parse(data) as A2UIPayload)
+                  _patch(asgId, { content: '' })
+                } catch { /* skip malformed A2UI */ }
+              } else if (eventType === 'RunFinished') {
+                _patch(asgId, { streaming: false })
+                finish()
+                return
+              } else if (eventType === 'RunError') {
+                let msg = 'An error occurred.'
+                try { msg = (JSON.parse(data).message as string | undefined) ?? msg } catch { /* */ }
+                _patch(asgId, { content: msg, streaming: false, error: true })
+                finish()
+                return
+              }
+            }
+          }
+        } catch { /* AbortError on finish() or network drop — handled below */ }
+        // Stream ended without RunFinished — clean up
+        if (!closed) { _patch(asgId, { streaming: false }); finish() }
+      })()
+
+      // ── Step 3: POST to trigger workflow execution ─────────────────────────────
       const postHeaders: Record<string, string> = {
         'Content-Type': 'application/json',
         'X-Session-ID': sid.current,
@@ -557,14 +554,15 @@ export function Widget({ config }: { config: WidgetConfig }) {
         throw new Error(detail)
       }
 
-      // POST succeeded — SSE events (RunFinished / RunError) will call finish()
-      // Safety timeout: if server never sends RunFinished, clean up after 120s
-      setTimeout(() => {
-        if (!closed) {
-          _patch(asgId, { streaming: false })
-          finish()
-        }
+      // ── Step 4: wait for SSE loop with safety timeout ─────────────────────────
+      // SSE events drive all state changes; safety timeout cleans up if server
+      // never sends RunFinished (e.g. hung workflow or dropped connection).
+      const safetyTimer = setTimeout(() => {
+        if (!closed) { _patch(asgId, { streaming: false }); finish() }
       }, 120_000)
+
+      await sseLoop
+      clearTimeout(safetyTimer)
 
     } catch (err) {
       if (!closed) {
@@ -630,7 +628,7 @@ export function Widget({ config }: { config: WidgetConfig }) {
             {msgs.map(m => (
               <div key={m.id} className={`agf-msg ${m.role}${m.error ? ' error' : ''}`}>
                 {/* Text bubble — shown when streaming, or when content exists and is not pure A2UI JSON */}
-                {(m.streaming || (m.content && !isA2UIJson(m.content))) && (
+                {(m.streaming || (m.content && !isA2UIJson(m.content) && !(m.a2uiBlocks?.length))) && (
                   <div className="agf-bubble">
                     {m.content}
                     {m.streaming && m.role === 'assistant' && (
