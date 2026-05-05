@@ -9,6 +9,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { flushSync } from 'react-dom'
 import { A2UIRenderer, type A2UIPayload } from './A2UIRenderer'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -499,7 +500,7 @@ export function Widget({ config }: { config: WidgetConfig }) {
               // Dispatch by AG-UI event type
               if (eventType === 'TextMessageContent') {
                 try { textBuffer += (JSON.parse(data).delta as string | undefined) ?? '' } catch { /* skip malformed */ }
-                _patch(asgId, { content: textBuffer })
+                flushSync(() => _patch(asgId, { content: textBuffer }))
               } else if (eventType === 'TextMessageStart') {
                 // streaming: true already set — no-op
               } else if (eventType === 'TextMessageEnd') {
