@@ -10,7 +10,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { flushSync } from 'react-dom'
-import { A2UIRenderer, type A2UIPayload } from './A2UIRenderer'
+import { A2UIRenderer, type A2UIPayload, type PrefabEnvelope } from './A2UIRenderer'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -31,8 +31,8 @@ interface Msg {
   content: string
   streaming: boolean
   error: boolean
-  /** A2UI component blocks rendered below text content. Appended by A2UIContent SSE events. */
-  a2uiBlocks?: A2UIPayload[]
+  /** A2UI/Prefab component blocks rendered below text content. Appended by A2UIContent SSE events. */
+  a2uiBlocks?: (A2UIPayload | PrefabEnvelope)[]
 }
 
 // ── Session ID ────────────────────────────────────────────────────────────────
@@ -378,26 +378,31 @@ function IconSend() {
   )
 }
 
-// ── A2UI type detection ───────────────────────────────────────────────────────
-// Mirrors Python _A2UI_COMPONENT_TYPES in agent-runtime/core/workflow.py.
-// Add new component types here and in the Python constant — nowhere else.
+// ── A2UI / Prefab format detection ────────────────────────────────────────────
+// Detects both the new Prefab envelope and the legacy flat A2UI format.
+// Mirrors Python _A2UI_LEGACY_TYPES + Prefab detection in agent-runtime/core/workflow.py.
 
-const A2UI_TYPES = new Set(['card', 'table', 'list', 'timeline', 'map', 'chart', 'accordion', 'tabs', 'progress', 'badge', 'actions'])
+const A2UI_LEGACY_TYPES = new Set(['card', 'table', 'list', 'timeline', 'map', 'chart', 'accordion', 'tabs', 'progress', 'badge', 'actions'])
 
 function isA2UIJson(content: string): boolean {
   if (!content) return false
   try {
     const parsed: unknown = JSON.parse(content)
     if (typeof parsed !== 'object' || parsed === null) return false
-    // Array: all elements must be valid A2UI components
+    // Prefab envelope: {"version":"0.2","view":{...}}
+    if (!Array.isArray(parsed)) {
+      const rec = parsed as Record<string, unknown>
+      if (typeof rec.version === 'string' && 'view' in rec) return true
+    }
+    // Legacy array: all elements must be valid A2UI components
     if (Array.isArray(parsed)) {
       return parsed.length > 0 && parsed.every(
         item => typeof item === 'object' && item !== null && !Array.isArray(item) &&
-          A2UI_TYPES.has((item as Record<string, unknown>).type as string)
+          A2UI_LEGACY_TYPES.has((item as Record<string, unknown>).type as string)
       )
     }
-    // Single object
-    return A2UI_TYPES.has((parsed as Record<string, unknown>).type as string)
+    // Legacy single object
+    return A2UI_LEGACY_TYPES.has((parsed as Record<string, unknown>).type as string)
   } catch {
     return false
   }
@@ -436,7 +441,7 @@ export function Widget({ config }: { config: WidgetConfig }) {
     function _patch(id: string, patch: Partial<Omit<Msg, 'id' | 'role'>>) {
       setMsgs(prev => prev.map(m => m.id === id ? { ...m, ...patch } : m))
     }
-    function _appendBlock(id: string, block: A2UIPayload) {
+    function _appendBlock(id: string, block: A2UIPayload | PrefabEnvelope) {
       setMsgs(prev => prev.map(m =>
         m.id === id ? { ...m, a2uiBlocks: [...(m.a2uiBlocks ?? []), block] } : m
       ))
@@ -507,7 +512,7 @@ export function Widget({ config }: { config: WidgetConfig }) {
                 _patch(asgId, { streaming: false })
               } else if (eventType === 'A2UIContent') {
                 try {
-                  _appendBlock(asgId, JSON.parse(data) as A2UIPayload)
+                  _appendBlock(asgId, JSON.parse(data) as A2UIPayload | PrefabEnvelope)
                   _patch(asgId, { content: '' })
                 } catch { /* skip malformed A2UI */ }
               } else if (eventType === 'RunFinished') {
