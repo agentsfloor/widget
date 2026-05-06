@@ -13,7 +13,7 @@
  * Tailwind `dark:` variants activate inside the component tree.
  */
 
-import { useState, createContext, useContext } from 'react'
+import { useState, useEffect, createContext, useContext } from 'react'
 import 'leaflet/dist/leaflet.css'
 
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet'
@@ -569,6 +569,7 @@ interface PrefabCtxValue {
   onStateChange: (k: string, v: unknown) => void
   onAction: (msg: string) => void
   isDark: boolean
+  showToast: (msg: string) => void
 }
 
 const PrefabCtx = createContext<PrefabCtxValue>({
@@ -576,6 +577,7 @@ const PrefabCtx = createContext<PrefabCtxValue>({
   onStateChange: () => {},
   onAction: () => {},
   isDark: false,
+  showToast: () => {},
 })
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
@@ -592,12 +594,56 @@ function interp(val: unknown, state: Record<string, unknown>): string {
   })
 }
 
+/** Resolve a raw value from state — returns actual value (array, object, etc.), not stringified. */
+function resolveValue(val: unknown, state: Record<string, unknown>): unknown {
+  if (typeof val !== 'string') return val
+  const m = val.match(/^\{\{\s*([\w.]+)\s*\}\}$/)
+  if (m) {
+    return m[1].split('.').reduce((obj: unknown, k) => {
+      if (obj && typeof obj === 'object') return (obj as Record<string, unknown>)[k]
+      return undefined
+    }, state as unknown)
+  }
+  return interp(val, state)
+}
+
+/**
+ * Evaluate a simple condition expression against state.
+ * Supports {{ key }} interpolation and == != > < >= <= comparisons.
+ * No eval(), no Function() — purely string parsing. Keep it simple.
+ */
+function evalCondition(expr: string, state: Record<string, unknown>): boolean {
+  const resolved = interp(expr, state)
+  const m = resolved.match(/^(.*?)\s*(==|!=|>=|<=|>|<)\s*(.+)$/)
+  if (m) {
+    const lStr = m[1].trim()
+    const op = m[2]
+    const rStr = m[3].trim()
+    const lNum = Number(lStr)
+    const rNum = Number(rStr)
+    const useNum = lStr !== '' && rStr !== '' && !isNaN(lNum) && !isNaN(rNum)
+    const l: string | number = useNum ? lNum : lStr
+    const r: string | number = useNum ? rNum : rStr
+    switch (op) {
+      case '==': return l === r
+      case '!=': return l !== r
+      case '>':  return l > r
+      case '<':  return l < r
+      case '>=': return l >= r
+      case '<=': return l <= r
+      default:   return false
+    }
+  }
+  return resolved !== '' && resolved !== 'false' && resolved !== '0' && resolved !== 'null' && resolved !== 'undefined'
+}
+
 /** Execute a Prefab action. */
 function execPrefabAction(
   action: PrefabAction,
   state: Record<string, unknown>,
   onStateChange: (k: string, v: unknown) => void,
   onAction: (msg: string) => void,
+  showToast: (msg: string) => void,
 ): void {
   switch (action.action) {
     case 'sendMessage':
@@ -616,6 +662,7 @@ function execPrefabAction(
       onStateChange(action.key as string, !state[action.key as string])
       break
     case 'showToast':
+      showToast(interp(action.message, state))
       break
   }
 }
@@ -675,13 +722,25 @@ function PrefabTabsNode({ node, s }: { node: PrefabComponent; s: (v: unknown) =>
   )
 }
 
+// ── ForEach item — nested Provider so {{ item.x }} and {{ index }} resolve per iteration ──
+
+function ForEachItem({ item, index, childNodes }: { item: unknown; index: number; childNodes: PrefabComponent[] }) {
+  const ctx = useContext(PrefabCtx)
+  const localCtx: PrefabCtxValue = { ...ctx, state: { ...ctx.state, item, index } }
+  return (
+    <PrefabCtx.Provider value={localCtx}>
+      <RenderChildren nodes={childNodes} />
+    </PrefabCtx.Provider>
+  )
+}
+
 // ── Node renderer ─────────────────────────────────────────────────────────────
 
 function NodeRenderer({ node }: { node: PrefabComponent }) {
-  const { state, onStateChange, onAction, isDark } = useContext(PrefabCtx)
+  const { state, onStateChange, onAction, isDark, showToast } = useContext(PrefabCtx)
   const s = (val: unknown): string => interp(val, state)
   const act = (a: unknown): void =>
-    execPrefabAction(a as PrefabAction, state, onStateChange, onAction)
+    execPrefabAction(a as PrefabAction, state, onStateChange, onAction, showToast)
 
   switch (node.type) {
 
@@ -1058,6 +1117,35 @@ function NodeRenderer({ node }: { node: PrefabComponent }) {
       )
     }
 
+    // ── Control flow ──────────────────────────────────────────────────────────
+
+    case 'Condition': {
+      const cases = (node.cases as Array<{ when: string; children: PrefabComponent[] }>) ?? []
+      const elseBranch = node.else as { children: PrefabComponent[] } | undefined
+      for (const c of cases) {
+        if (evalCondition(c.when ?? '', state)) {
+          return <RenderChildren nodes={c.children ?? []} />
+        }
+      }
+      if (elseBranch?.children?.length) {
+        return <RenderChildren nodes={elseBranch.children} />
+      }
+      return null
+    }
+
+    case 'ForEach': {
+      const rawItems = resolveValue(node.items, state)
+      if (!Array.isArray(rawItems) || rawItems.length === 0) return null
+      const childTemplates = (node.children as PrefabComponent[] | undefined) ?? []
+      return (
+        <>
+          {rawItems.map((item, idx) => (
+            <ForEachItem key={idx} item={item} index={idx} childNodes={childTemplates} />
+          ))}
+        </>
+      )
+    }
+
     default:
       return <div className="text-xs text-muted-foreground italic">[{node.type}]</div>
   }
@@ -1071,18 +1159,36 @@ function PrefabRenderer({ envelope, isDark, onAction }: {
   onAction: (msg: string) => void
 }) {
   const [state, setStateMap] = useState<Record<string, unknown>>(envelope.state ?? {})
+  const [toastMsg, setToastMsg] = useState<string | null>(null)
+  useEffect(() => {
+    if (!toastMsg) return
+    const id = setTimeout(() => setToastMsg(null), 3000)
+    return () => clearTimeout(id)
+  }, [toastMsg])
   const ctxValue: PrefabCtxValue = {
     state,
     onStateChange: (k: string, v: unknown) => setStateMap(prev => ({ ...prev, [k]: v })),
     onAction,
     isDark,
+    showToast: setToastMsg,
   }
   return (
-    <PrefabCtx.Provider value={ctxValue}>
-      <div className={cn('a2ui-root', isDark && 'dark')}>
-        <NodeRenderer node={envelope.view} />
-      </div>
-    </PrefabCtx.Provider>
+    <>
+      <PrefabCtx.Provider value={ctxValue}>
+        <div className={cn('a2ui-root', isDark && 'dark')}>
+          <NodeRenderer node={envelope.view} />
+        </div>
+      </PrefabCtx.Provider>
+      {toastMsg && (
+        <div
+          role="status"
+          style={{ position: 'fixed', bottom: 16, right: 16, zIndex: 9999 }}
+          className="rounded-lg bg-zinc-900 text-white px-4 py-2.5 text-xs shadow-lg max-w-xs"
+        >
+          {toastMsg}
+        </div>
+      )}
+    </>
   )
 }
 
