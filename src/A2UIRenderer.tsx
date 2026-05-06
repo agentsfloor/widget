@@ -13,7 +13,7 @@
  * Tailwind `dark:` variants activate inside the component tree.
  */
 
-import { useState, useEffect, createContext, useContext } from 'react'
+import { useState, useRef, useEffect, createContext, useContext } from 'react'
 import 'leaflet/dist/leaflet.css'
 
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet'
@@ -558,7 +558,7 @@ export interface PrefabComponent {
 }
 
 interface PrefabAction {
-  action: 'sendMessage' | 'openLink' | 'copy' | 'setState' | 'toggleState' | 'showToast'
+  action: 'sendMessage' | 'openLink' | 'copy' | 'setState' | 'toggleState' | 'showToast' | 'appendState' | 'popState' | 'fetch' | 'setInterval' | 'clearInterval'
   [key: string]: unknown
 }
 
@@ -570,6 +570,8 @@ interface PrefabCtxValue {
   onAction: (msg: string) => void
   isDark: boolean
   showToast: (msg: string) => void
+  onSetInterval: (key: string, ms: number, actions: PrefabAction[]) => void
+  onClearInterval: (key: string) => void
 }
 
 const PrefabCtx = createContext<PrefabCtxValue>({
@@ -578,6 +580,8 @@ const PrefabCtx = createContext<PrefabCtxValue>({
   onAction: () => {},
   isDark: false,
   showToast: () => {},
+  onSetInterval: () => {},
+  onClearInterval: () => {},
 })
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
@@ -664,6 +668,62 @@ function execPrefabAction(
     case 'showToast':
       showToast(interp(action.message, state))
       break
+    case 'appendState': {
+      const key = action.key as string
+      const val = resolveValue(action.value, state)
+      const existing = state[key]
+      onStateChange(key, Array.isArray(existing) ? [...existing, val] : [val])
+      break
+    }
+    case 'popState': {
+      const key = action.key as string
+      const existing = state[key]
+      if (!Array.isArray(existing) || existing.length === 0) break
+      const rawIdx = action.index as number | undefined
+      const idx = rawIdx !== undefined ? rawIdx : -1
+      const actualIdx = idx < 0 ? existing.length + idx : idx
+      if (actualIdx < 0 || actualIdx >= existing.length) break
+      const newArr = [...existing]
+      newArr.splice(actualIdx, 1)
+      onStateChange(key, newArr)
+      break
+    }
+    case 'fetch': {
+      const url = interp(action.url, state)
+      const method = ((action.method as string | undefined) ?? 'GET').toUpperCase()
+      const resultKey = action.resultKey as string | undefined
+      const onError = action.onError as string | undefined
+      const rawHeaders = action.headers as Record<string, string> | undefined
+      const headers: Record<string, string> = {}
+      if (rawHeaders) {
+        for (const [hk, hv] of Object.entries(rawHeaders)) {
+          headers[hk] = interp(hv, state)
+        }
+      }
+      let body: string | undefined
+      if (action.body != null && method !== 'GET' && method !== 'HEAD') {
+        const rawBody = action.body as Record<string, unknown>
+        const resolvedBody: Record<string, unknown> = {}
+        for (const [bk, bv] of Object.entries(rawBody)) {
+          resolvedBody[bk] = resolveValue(bv, state)
+        }
+        body = JSON.stringify(resolvedBody)
+        if (!headers['Content-Type']) headers['Content-Type'] = 'application/json'
+      }
+      window.fetch(url, {
+        method,
+        headers: Object.keys(headers).length ? headers : undefined,
+        body,
+      })
+        .then(r => r.json())
+        .then(data => { if (resultKey) onStateChange(resultKey, data as unknown) })
+        .catch((err: unknown) => {
+          if (onError) onStateChange(onError, err instanceof Error ? err.message : String(err))
+          else console.warn('[A2UI fetch error]', err)
+        })
+      break
+    }
+    // setInterval / clearInterval are handled in NodeRenderer's act closure (need refs)
   }
 }
 
@@ -737,10 +797,20 @@ function ForEachItem({ item, index, childNodes }: { item: unknown; index: number
 // ── Node renderer ─────────────────────────────────────────────────────────────
 
 function NodeRenderer({ node }: { node: PrefabComponent }) {
-  const { state, onStateChange, onAction, isDark, showToast } = useContext(PrefabCtx)
+  const { state, onStateChange, onAction, isDark, showToast, onSetInterval, onClearInterval } = useContext(PrefabCtx)
   const s = (val: unknown): string => interp(val, state)
-  const act = (a: unknown): void =>
-    execPrefabAction(a as PrefabAction, state, onStateChange, onAction, showToast)
+  const act = (a: unknown): void => {
+    const action = a as PrefabAction
+    if (action.action === 'setInterval') {
+      onSetInterval(action.key as string, Number(action.interval ?? 1000), (action.actions as PrefabAction[]) ?? [])
+      return
+    }
+    if (action.action === 'clearInterval') {
+      onClearInterval(action.key as string)
+      return
+    }
+    execPrefabAction(action, state, onStateChange, onAction, showToast)
+  }
 
   switch (node.type) {
 
@@ -1160,17 +1230,51 @@ function PrefabRenderer({ envelope, isDark, onAction }: {
 }) {
   const [state, setStateMap] = useState<Record<string, unknown>>(envelope.state ?? {})
   const [toastMsg, setToastMsg] = useState<string | null>(null)
+  // stateRef keeps interval ticks from reading stale state via closure
+  const stateRef = useRef<Record<string, unknown>>(envelope.state ?? {})
+  // intervalIds stored in ref — no re-render when intervals are set/cleared
+  const intervalIds = useRef<Record<string, ReturnType<typeof setInterval>>>({})
+
   useEffect(() => {
     if (!toastMsg) return
     const id = setTimeout(() => setToastMsg(null), 3000)
     return () => clearTimeout(id)
   }, [toastMsg])
+
+  // Clear all intervals on unmount
+  useEffect(() => {
+    return () => { Object.values(intervalIds.current).forEach(id => clearInterval(id)) }
+  }, [])
+
+  const onStateChange = (k: string, v: unknown) =>
+    setStateMap(prev => {
+      const next = { ...prev, [k]: v }
+      stateRef.current = next
+      return next
+    })
+
+  const onSetIntervalCb = (key: string, ms: number, actions: PrefabAction[]) => {
+    if (intervalIds.current[key] !== undefined) clearInterval(intervalIds.current[key])
+    intervalIds.current[key] = setInterval(() => {
+      actions.forEach(a => execPrefabAction(a, stateRef.current, onStateChange, onAction, setToastMsg))
+    }, ms)
+  }
+
+  const onClearIntervalCb = (key: string) => {
+    if (intervalIds.current[key] !== undefined) {
+      clearInterval(intervalIds.current[key])
+      delete intervalIds.current[key]
+    }
+  }
+
   const ctxValue: PrefabCtxValue = {
     state,
-    onStateChange: (k: string, v: unknown) => setStateMap(prev => ({ ...prev, [k]: v })),
+    onStateChange,
     onAction,
     isDark,
     showToast: setToastMsg,
+    onSetInterval: onSetIntervalCb,
+    onClearInterval: onClearIntervalCb,
   }
   return (
     <>
