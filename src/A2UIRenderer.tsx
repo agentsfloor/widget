@@ -29,6 +29,7 @@ import {
   ComposedChart as ReComposedChart,
   Treemap as ReTreemap,
   FunnelChart as ReFunnelChart, Funnel, LabelList,
+  Sankey as ReSankey,
   XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer,
 } from 'recharts'
 import { cn } from '@/lib/utils'
@@ -71,6 +72,9 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import {
   Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle,
 } from '@/components/ui/empty'
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select'
 
 // Fix Leaflet default icon URLs in bundled environments (icons reference missing assets otherwise)
 const _DefaultIcon = L.icon({
@@ -1516,6 +1520,20 @@ function NodeRenderer({ node }: { node: PrefabComponent }) {
               </ReFunnelChart>
             )
           }
+          case 'sankey': {
+            const snNodes = (node.nodes as Array<{ name: string }>) ?? []
+            const snLinks = (node.links as Array<{ source: number; target: number; value: number }>) ?? []
+            if (!snNodes.length || !snLinks.length) return null
+            return (
+              <ReSankey
+                data={{ nodes: snNodes, links: snLinks }}
+                nodePadding={50}
+                nodeWidth={10}
+              >
+                <RechartsTooltip contentStyle={{ fontSize: 10 }} />
+              </ReSankey>
+            )
+          }
           default:
             return (
               <ReBarChart data={cData} margin={{ top: 4, right: 8, left: -16, bottom: 4 }}>
@@ -1613,14 +1631,16 @@ function NodeRenderer({ node }: { node: PrefabComponent }) {
       return (
         <div className="w-full my-1">
           {node.label != null && <label className="text-xs font-medium mb-1 block">{s(node.label)}</label>}
-          <select
-            value={selVal}
-            onChange={e => onStateChange(selKey, e.target.value)}
-            className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
-          >
-            {node.placeholder != null && <option value="">{s(node.placeholder)}</option>}
-            {options.map((opt, i) => <option key={i} value={opt.value}>{s(opt.label)}</option>)}
-          </select>
+          <Select value={selVal} onValueChange={v => onStateChange(selKey, v)}>
+            <SelectTrigger className="w-full text-xs">
+              <SelectValue placeholder={s(node.placeholder ?? 'Select...')} />
+            </SelectTrigger>
+            <SelectContent>
+              {options.map((opt, i) => (
+                <SelectItem key={i} value={opt.value}>{s(opt.label)}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       )
     }
