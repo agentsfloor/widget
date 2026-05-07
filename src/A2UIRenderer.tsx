@@ -13,7 +13,7 @@
  * Tailwind `dark:` variants activate inside the component tree.
  */
 
-import { useState, useRef, useEffect, createContext, useContext } from 'react'
+import { useState, useRef, useEffect, createContext, useContext, useCallback, useMemo } from 'react'
 import 'leaflet/dist/leaflet.css'
 
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet'
@@ -606,7 +606,7 @@ interface PrefabAction {
 
 interface PrefabCtxValue {
   state: Record<string, unknown>
-  onStateChange: (k: string, v: unknown) => void
+  onStateChange: (k: string, v: unknown | ((prev: unknown) => unknown)) => void
   onAction: (msg: string) => void
   isDark: boolean
   showToast: (msg: string) => void
@@ -685,7 +685,7 @@ function evalCondition(expr: string, state: Record<string, unknown>): boolean {
 function execPrefabAction(
   action: PrefabAction,
   state: Record<string, unknown>,
-  onStateChange: (k: string, v: unknown) => void,
+  onStateChange: (k: string, v: unknown | ((prev: unknown) => unknown)) => void,
   onAction: (msg: string) => void,
   showToast: (msg: string) => void,
 ): void {
@@ -703,7 +703,7 @@ function execPrefabAction(
       onStateChange(action.key as string, action.value)
       break
     case 'toggleState':
-      onStateChange(action.key as string, !state[action.key as string])
+      onStateChange(action.key as string, (prev: unknown) => !prev)
       break
     case 'showToast':
       showToast(interp(action.message, state))
@@ -1849,28 +1849,29 @@ function PrefabRenderer({ envelope, isDark, onAction }: {
     return () => { Object.values(intervalIds.current).forEach(id => clearInterval(id)) }
   }, [])
 
-  const onStateChange = (k: string, v: unknown) =>
+  const onStateChange = useCallback((k: string, v: unknown | ((prev: unknown) => unknown)) =>
     setStateMap(prev => {
-      const next = { ...prev, [k]: v }
+      const resolved = typeof v === 'function' ? (v as (p: unknown) => unknown)(prev[k]) : v
+      const next = { ...prev, [k]: resolved }
       stateRef.current = next
       return next
-    })
+    }), [])
 
-  const onSetIntervalCb = (key: string, ms: number, actions: PrefabAction[]) => {
+  const onSetIntervalCb = useCallback((key: string, ms: number, actions: PrefabAction[]) => {
     if (intervalIds.current[key] !== undefined) clearInterval(intervalIds.current[key])
     intervalIds.current[key] = setInterval(() => {
       actions.forEach(a => execPrefabAction(a, stateRef.current, onStateChange, onAction, setToastMsg))
     }, ms)
-  }
+  }, [onStateChange, onAction])
 
-  const onClearIntervalCb = (key: string) => {
+  const onClearIntervalCb = useCallback((key: string) => {
     if (intervalIds.current[key] !== undefined) {
       clearInterval(intervalIds.current[key])
       delete intervalIds.current[key]
     }
-  }
+  }, [])
 
-  const ctxValue: PrefabCtxValue = {
+  const ctxValue = useMemo<PrefabCtxValue>(() => ({
     state,
     onStateChange,
     onAction,
@@ -1878,7 +1879,7 @@ function PrefabRenderer({ envelope, isDark, onAction }: {
     showToast: setToastMsg,
     onSetInterval: onSetIntervalCb,
     onClearInterval: onClearIntervalCb,
-  }
+  }), [state, onStateChange, onAction, isDark, onSetIntervalCb, onClearIntervalCb])
   return (
     <>
       <PrefabCtx.Provider value={ctxValue}>
