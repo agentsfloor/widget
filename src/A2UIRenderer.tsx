@@ -377,7 +377,7 @@ function ChartRenderer({ payload, isDark }: { payload: A2UIPayload; isDark: bool
       {payload.title && (
         <p className="text-xs font-semibold mb-1 text-foreground">{payload.title}</p>
       )}
-      <div style={{ width: '100%', height: 160 }}>
+      <div style={{ width: '100%', height: 160, minWidth: 300 }}>
         <ChartErrorBoundary>
           <ResponsiveContainer width="100%" height="100%">
             {chartType === 'line' ? (
@@ -1585,7 +1585,7 @@ function NodeRenderer({ node }: { node: PrefabComponent }) {
       return (
         <div className="w-full my-1">
           {node.title != null && <p className="text-xs font-semibold mb-1">{s(node.title)}</p>}
-          <div style={{ width: '100%', height: 160 }}>
+          <div style={{ width: '100%', height: 160, minWidth: 300 }}>
             <ChartErrorBoundary>
               <ResponsiveContainer width="100%" height="100%">
                 {renderInner()}
