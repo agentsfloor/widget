@@ -13,7 +13,8 @@
  * Tailwind `dark:` variants activate inside the component tree.
  */
 
-import { useState, useRef, useEffect, createContext, useContext, useCallback, useMemo } from 'react'
+import { useState, useRef, useEffect, createContext, useContext, useCallback, useMemo, Component } from 'react'
+import type { ReactNode } from 'react'
 import 'leaflet/dist/leaflet.css'
 
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet'
@@ -152,6 +153,22 @@ const PALETTE = ['#6366f1', '#f59e0b', '#10b981', '#ef4444', '#3b82f6', '#8b5cf6
 
 function col(i: number, override?: string): string {
   return override ?? PALETTE[i % PALETTE.length]
+}
+
+// ── Chart error boundary ───────────────────────────────────────────────────────
+
+class ChartErrorBoundary extends Component<{ children: ReactNode }, { error: boolean }> {
+  constructor(props: { children: ReactNode }) {
+    super(props)
+    this.state = { error: false }
+  }
+  static getDerivedStateFromError() { return { error: true } }
+  render() {
+    if (this.state.error) {
+      return <p className="text-xs text-muted-foreground py-2 text-center">Chart unavailable</p>
+    }
+    return this.props.children
+  }
 }
 
 // ── Card ──────────────────────────────────────────────────────────────────────
@@ -336,16 +353,23 @@ function ChartRenderer({ payload, isDark }: { payload: A2UIPayload; isDark: bool
   const chartType = d.chartType ?? 'bar'
   const axisColor = isDark ? '#71717a' : '#a1a1aa'
   const gridColor = isDark ? '#3f3f46' : '#e4e4e7'
+  // Null-guard: coerce null/undefined labels to 'Item N' and series names to 'Series N'
+  const safeLabels = d.labels.map((l, i) => (l != null ? String(l) : `Item ${i + 1}`))
+  const safeSeries = d.series.map((s, i) => ({
+    ...s,
+    name: s.name != null && s.name !== '' ? String(s.name) : `Series ${i + 1}`,
+    values: (s.values ?? []).map(v => (v == null || !Number.isFinite(Number(v)) ? 0 : Number(v))),
+  }))
 
-  const chartData = d.labels.map((label, li) => {
+  const chartData = safeLabels.map((label, li) => {
     const entry: Record<string, string | number> = { name: label }
-    d.series.forEach(s => { entry[s.name] = s.values[li] ?? 0 })
+    safeSeries.forEach(s => { entry[s.name] = s.values[li] ?? 0 })
     return entry
   })
 
-  const pieData = d.labels.map((label, i) => ({
+  const pieData = safeLabels.map((label, i) => ({
     name: label,
-    value: d.series[0]?.values[i] ?? 0,
+    value: safeSeries[0]?.values[i] ?? 0,
   }))
 
   return (
@@ -354,55 +378,57 @@ function ChartRenderer({ payload, isDark }: { payload: A2UIPayload; isDark: bool
         <p className="text-xs font-semibold mb-1 text-foreground">{payload.title}</p>
       )}
       <div style={{ width: '100%', height: 160 }}>
-        <ResponsiveContainer width="100%" height="100%">
-          {chartType === 'line' ? (
-            <ReLineChart data={chartData} margin={{ top: 4, right: 8, left: -16, bottom: 4 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
-              <XAxis dataKey="name" tick={{ fontSize: 9, fill: axisColor }} />
-              <YAxis tick={{ fontSize: 9, fill: axisColor }} />
-              <RechartsTooltip contentStyle={{ fontSize: 10 }} />
-              {d.series.length > 1 && <Legend iconSize={8} wrapperStyle={{ fontSize: 9 }} />}
-              {d.series.map((s, i) => (
-                <Line
-                  key={s.name}
-                  type="monotone"
-                  dataKey={s.name}
-                  stroke={col(i, s.color)}
-                  strokeWidth={2}
-                  dot={{ r: 3 }}
-                />
-              ))}
-            </ReLineChart>
-          ) : chartType === 'pie' ? (
-            <RePieChart>
-              <Pie
-                data={pieData}
-                cx="50%"
-                cy="50%"
-                outerRadius={55}
-                dataKey="value"
-              >
-                {pieData.map((_, i) => (
-                  <Cell key={i} fill={col(i, d.series[0]?.color)} />
+        <ChartErrorBoundary>
+          <ResponsiveContainer width="100%" height="100%">
+            {chartType === 'line' ? (
+              <ReLineChart data={chartData} margin={{ top: 4, right: 8, left: -16, bottom: 4 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
+                <XAxis dataKey="name" tick={{ fontSize: 9, fill: axisColor }} />
+                <YAxis tick={{ fontSize: 9, fill: axisColor }} />
+                <RechartsTooltip contentStyle={{ fontSize: 10 }} />
+                {safeSeries.length > 1 && <Legend iconSize={8} wrapperStyle={{ fontSize: 9 }} />}
+                {safeSeries.map((s, i) => (
+                  <Line
+                    key={s.name}
+                    type="monotone"
+                    dataKey={s.name}
+                    stroke={col(i, s.color)}
+                    strokeWidth={2}
+                    dot={{ r: 3 }}
+                  />
                 ))}
-              </Pie>
-              <RechartsTooltip contentStyle={{ fontSize: 10 }} />
-              <Legend iconSize={8} wrapperStyle={{ fontSize: 9 }} />
-            </RePieChart>
-          ) : (
-            /* bar (default) */
-            <ReBarChart data={chartData} margin={{ top: 4, right: 8, left: -16, bottom: 4 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
-              <XAxis dataKey="name" tick={{ fontSize: 9, fill: axisColor }} />
-              <YAxis tick={{ fontSize: 9, fill: axisColor }} />
-              <RechartsTooltip contentStyle={{ fontSize: 10 }} />
-              {d.series.length > 1 && <Legend iconSize={8} wrapperStyle={{ fontSize: 9 }} />}
-              {d.series.map((s, i) => (
-                <Bar key={s.name} dataKey={s.name} fill={col(i, s.color)} radius={[2, 2, 0, 0]} />
-              ))}
-            </ReBarChart>
-          )}
-        </ResponsiveContainer>
+              </ReLineChart>
+            ) : chartType === 'pie' ? (
+              <RePieChart>
+                <Pie
+                  data={pieData}
+                  cx="50%"
+                  cy="50%"
+                  outerRadius={55}
+                  dataKey="value"
+                >
+                  {pieData.map((_, i) => (
+                    <Cell key={i} fill={col(i, safeSeries[0]?.color)} />
+                  ))}
+                </Pie>
+                <RechartsTooltip contentStyle={{ fontSize: 10 }} />
+                <Legend iconSize={8} wrapperStyle={{ fontSize: 9 }} />
+              </RePieChart>
+            ) : (
+              /* bar (default) */
+              <ReBarChart data={chartData} margin={{ top: 4, right: 8, left: -16, bottom: 4 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
+                <XAxis dataKey="name" tick={{ fontSize: 9, fill: axisColor }} />
+                <YAxis tick={{ fontSize: 9, fill: axisColor }} />
+                <RechartsTooltip contentStyle={{ fontSize: 10 }} />
+                {safeSeries.length > 1 && <Legend iconSize={8} wrapperStyle={{ fontSize: 9 }} />}
+                {safeSeries.map((s, i) => (
+                  <Bar key={s.name} dataKey={s.name} fill={col(i, s.color)} radius={[2, 2, 0, 0]} />
+                ))}
+              </ReBarChart>
+            )}
+          </ResponsiveContainer>
+        </ChartErrorBoundary>
       </div>
     </div>
   )
@@ -1396,9 +1422,15 @@ function NodeRenderer({ node }: { node: PrefabComponent }) {
 
     case 'Chart': {
       const cType = (node.chartType as string) ?? 'bar'
-      const cLabels = (node.labels as string[]) ?? []
-      const cSeries = (node.series as Array<{ name: string; values: number[]; color?: string }>) ?? []
-      if (!cLabels.length && cType !== 'scatter') return null
+      // Null-guard: coerce null/undefined labels to 'Item N' and series names to 'Series N'
+      const cLabels = ((node.labels as string[]) ?? []).map((l, i) => (l != null ? String(l) : `Item ${i + 1}`))
+      const rawSeries = (node.series as Array<{ name: string; values: number[]; color?: string }>) ?? []
+      const cSeries = rawSeries.map((ser, i) => ({
+        ...ser,
+        name: ser.name != null && ser.name !== '' ? String(ser.name) : `Series ${i + 1}`,
+        values: (ser.values ?? []).map(v => (v == null || !Number.isFinite(Number(v)) ? 0 : Number(v))),
+      }))
+      if (!cLabels.length && cType !== 'scatter' && cType !== 'sankey') return null
       const axisColor = isDark ? '#71717a' : '#a1a1aa'
       const gridColor = isDark ? '#3f3f46' : '#e4e4e7'
       const cData = cLabels.map((label, li) => {
@@ -1554,9 +1586,11 @@ function NodeRenderer({ node }: { node: PrefabComponent }) {
         <div className="w-full my-1">
           {node.title != null && <p className="text-xs font-semibold mb-1">{s(node.title)}</p>}
           <div style={{ width: '100%', height: 160 }}>
-            <ResponsiveContainer width="100%" height="100%">
-              {renderInner()}
-            </ResponsiveContainer>
+            <ChartErrorBoundary>
+              <ResponsiveContainer width="100%" height="100%">
+                {renderInner()}
+              </ResponsiveContainer>
+            </ChartErrorBoundary>
           </div>
         </div>
       )
