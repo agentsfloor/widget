@@ -49,6 +49,6 @@ jobs:
 
       - name: Upload widget.js to CDN bucket
         run: |
-          gcloud storage cp dist/widget.js \
-            gs://cdn.agentsfloor.com/widget/latest/widget.js \
-            --cache-control="no-cache"
+          gsutil -h "Cache-Control:no-cache, no-store, must-revalidate, max-age=0" cp \
+            dist/widget.js \
+            gs://cdn.agentsfloor.com/widget/latest/widget.js
